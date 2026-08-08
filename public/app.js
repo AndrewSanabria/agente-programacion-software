@@ -324,10 +324,6 @@ document.addEventListener('DOMContentLoaded', () => {
               </div>
             </div>
           </div>
-        `;
-      }
-      return '';
-    }).join('');
       }
       return '';
     }).join('');
