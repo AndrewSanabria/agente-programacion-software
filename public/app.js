@@ -488,7 +488,47 @@ document.addEventListener('DOMContentLoaded', () => {
   async function refreshAll() {
     await fetchProjects();
     await fetchConversations();
+    await fetchAgentStatus();
+  }
+
+  // ===== AGENT STATUS POLLING =====
+  async function fetchAgentStatus() {
+    try {
+      const res = await fetch('/api/agents');
+      const data = await res.json();
+      if (!data.ok) return;
+      data.agents.forEach(agent => {
+        // Mapear IDs del API a IDs de los badges en el HTML
+        const badgeIdMap = { 'gpt-4o': 'gpt', 'claude-3.5': 'claude', 'antigravity': 'antigravity' };
+        const badgeKey = badgeIdMap[agent.id] || agent.id;
+        const badge = document.getElementById(`agent-badge-${badgeKey}`);
+        if (!badge) return;
+        const icon = agent.status === 'connected' ? '🟢'
+                   : agent.status === 'simulated' ? '🟡'
+                   : '🔴';
+        const label = agent.id === 'gpt-4o' ? `🧠 GPT-4o (Arquitecto) ${icon}`
+                    : agent.id === 'claude-3.5' ? `🛡️ Claude 3.5 (Revisor) ${icon}`
+                    : `✨ Antigravity (Líder ${icon})`;
+        badge.textContent = label;
+        badge.setAttribute('data-status', agent.status);
+      });
+      // Worker status en footer del sidebar
+      const workerFooter = document.getElementById('worker-status-footer');
+      if (workerFooter) {
+        const agy = data.agents.find(a => a.id === 'antigravity');
+        const wIcon = agy.status === 'connected' ? '🟢'
+                     : agy.status === 'simulated' ? '🟡'
+                     : '🔴';
+        workerFooter.textContent = `Antigravity ${wIcon}`;
+        workerFooter.style.color = agy.status === 'connected' ? 'var(--success)'
+                                 : agy.status === 'simulated' ? 'var(--warning)'
+                                 : 'var(--danger)';
+      }
+    } catch { /* silently fail — la UI muestra el último estado conocido */ }
   }
 
   refreshAll();
+
+  // Poll agent status every 5 seconds
+  setInterval(fetchAgentStatus, 5000);
 });

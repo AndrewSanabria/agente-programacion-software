@@ -89,7 +89,7 @@
         <div class="avatar" style="background: linear-gradient(135deg, var(--primary), #818cf8); font-weight:700;">AS</div>
         <div class="profile-info">
           <div class="name" style="font-weight:600; color:#fff;" title="Andres Sanabria (@AndrewSanabria)">Andres Sanabria</div>
-          <div class="status-sub" style="color:var(--success); font-size:11px;">Antigravity Conectado 🟢</div>
+          <div class="status-sub" id="worker-status-footer" style="color:var(--warning); font-size:11px;">Antigravity ⏳</div>
         </div>
         <button class="icon-btn-sm" id="btn-device-status" title="Worker Local: Mac-Pro Online">⚡</button>
         <button class="icon-btn-sm" id="btn-settings" title="Configuración Antigravity">⚙️</button>
@@ -214,10 +214,10 @@
         <div class="section-header-row">
           <h3>Equipo de Agentes</h3>
         </div>
-        <div class="agents-badges-row">
-          <span class="sub-agent agy" style="background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid var(--primary);">✨ Antigravity (Líder 🟢)</span>
-          <span class="sub-agent gpt">🧠 GPT-4o (Arquitecto)</span>
-          <span class="sub-agent claude">🛡️ Claude 3.5 (Revisor)</span>
+        <div class="agents-badges-row" id="agents-badges-row">
+          <span class="sub-agent agy" id="agent-badge-antigravity" data-status="loading" style="background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid var(--primary);">✨ Antigravity ⏳</span>
+          <span class="sub-agent gpt" id="agent-badge-gpt" data-status="loading">🧠 GPT-4o ⏳</span>
+          <span class="sub-agent claude" id="agent-badge-claude" data-status="loading">🛡️ Claude 3.5 ⏳</span>
         </div>
       </div>
 

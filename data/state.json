@@ -32,7 +32,7 @@
       "projectId": "proj_demo",
       "title": "Conversación principal",
       "createdAt": "2026-08-08T04:26:43.313Z",
-      "updatedAt": "2026-08-08T04:38:21.414Z"
+      "updatedAt": "2026-08-08T04:46:57.452Z"
     }
   ],
   "messages": [
@@ -147,9 +147,328 @@
       "kind": "answer",
       "review": null,
       "createdAt": "2026-08-08T04:38:21.414Z"
+    },
+    {
+      "id": "msg_85575e48",
+      "conversationId": "conv_main",
+      "role": "user",
+      "content": "PUEDES CONECTARTE A MI GIT HUB",
+      "createdAt": "2026-08-08T04:43:37.960Z"
+    },
+    {
+      "id": "msg_85d5eac5",
+      "conversationId": "conv_main",
+      "role": "assistant",
+      "content": "Entiendo tu solicitud: “PUEDES CONECTARTE A MI GIT HUB”. Para darte una respuesta basada en el proyecto, pide una revisión, por ejemplo: “Revisa el sistema y dime qué problemas tiene”.",
+      "kind": "answer",
+      "review": null,
+      "createdAt": "2026-08-08T04:43:37.960Z"
+    },
+    {
+      "id": "msg_bcb0b522",
+      "conversationId": "conv_main",
+      "role": "user",
+      "content": "REVISAR UN REPOSITORIO",
+      "createdAt": "2026-08-08T04:43:51.660Z"
+    },
+    {
+      "id": "msg_07e18a14",
+      "conversationId": "conv_main",
+      "role": "assistant",
+      "content": "Revisé **agente de programacion software** en modo solo lectura.\n\nInspeccioné 12 archivos, la rama `main` y 3 documento(s).\n\nLas pruebas configuradas pasaron.\n\nEncontré 1 hallazgo(s); 1 son críticos o altos.\n\nNo modifiqué archivos ni ejecuté comandos recibidos desde el chat.",
+      "kind": "review",
+      "review": {
+        "ok": true,
+        "project": "agente de programacion software",
+        "root": "/Users/andressanabria/Desktop/iankaphone web/agente de programacion software",
+        "inspectedFiles": [
+          "AGENTS.md",
+          "README.md",
+          "app.js",
+          "chat.css",
+          "dashboard-correcciones.zip",
+          "index.html",
+          "package.json",
+          "public/app.js",
+          "public/index.html",
+          "public/styles.css",
+          "server.js",
+          "styles.css"
+        ],
+        "inspectedDocuments": [
+          "AGENTS.md",
+          "README.md",
+          "package.json"
+        ],
+        "git": {
+          "available": true,
+          "branch": "main",
+          "changedFiles": [
+            "M data/state.json",
+            " M public/index.html",
+            " M server.js"
+          ]
+        },
+        "tests": {
+          "status": "passed",
+          "command": "npm test",
+          "output": "\n> agente-programacion-software@0.1.0 test\n> node --test\n\nℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 16.531383\n"
+        },
+        "findings": [
+          {
+            "severity": "critical",
+            "title": "La ejecución de agentes todavía está simulada",
+            "evidence": "El servidor contiene una respuesta que declara una ejecución simulada como correcta.",
+            "recommendation": "Conecta el orquestador a un worker real y no afirmes que se modificó código si solo se avanzó una etapa."
+          }
+        ],
+        "summary": "Revisión real completada: se inspeccionaron 12 archivos y se encontraron 1 hallazgos (1 críticos, 0 altos, 0 medios). No se modificaron archivos.",
+        "completedAt": "2026-08-08T04:43:52.148Z"
+      },
+      "createdAt": "2026-08-08T04:43:52.148Z"
+    },
+    {
+      "id": "msg_fd4f01f5",
+      "conversationId": "conv_main",
+      "role": "user",
+      "content": "VERIFICAR ESTADO DEL SISTEMA",
+      "createdAt": "2026-08-08T04:46:56.961Z"
+    },
+    {
+      "id": "msg_76870dc0",
+      "conversationId": "conv_main",
+      "role": "assistant",
+      "content": "Revisé **agente de programacion software** en modo solo lectura.\n\nInspeccioné 12 archivos, la rama `main` y 3 documento(s).\n\nLas pruebas configuradas pasaron.\n\nNo encontré problemas en las comprobaciones disponibles.\n\nNo modifiqué archivos ni ejecuté comandos recibidos desde el chat.",
+      "kind": "review",
+      "review": {
+        "ok": true,
+        "project": "agente de programacion software",
+        "root": "/Users/andressanabria/Desktop/iankaphone web/agente de programacion software",
+        "inspectedFiles": [
+          "AGENTS.md",
+          "README.md",
+          "app.js",
+          "chat.css",
+          "dashboard-correcciones.zip",
+          "index.html",
+          "package.json",
+          "public/app.js",
+          "public/index.html",
+          "public/styles.css",
+          "server.js",
+          "styles.css"
+        ],
+        "inspectedDocuments": [
+          "AGENTS.md",
+          "README.md",
+          "package.json"
+        ],
+        "git": {
+          "available": true,
+          "branch": "main",
+          "changedFiles": [
+            "M data/state.json",
+            " M public/app.js",
+            " M public/index.html",
+            " M public/styles.css",
+            " M server.js"
+          ]
+        },
+        "tests": {
+          "status": "passed",
+          "command": "npm test",
+          "output": "\n> agente-programacion-software@0.1.0 test\n> node --test\n\nℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 16.532669\n"
+        },
+        "findings": [],
+        "summary": "Revisión real completada: se inspeccionaron 12 archivos y no se detectaron hallazgos en las comprobaciones disponibles. No se modificaron archivos.",
+        "completedAt": "2026-08-08T04:46:57.451Z"
+      },
+      "createdAt": "2026-08-08T04:46:57.451Z"
     }
   ],
   "runs": [
+    {
+      "id": "run_81c7cdee",
+      "conversationId": "conv_main",
+      "messageId": "msg_76870dc0",
+      "intent": "review",
+      "status": "completed",
+      "progress": 100,
+      "archReasoning": "Revisé **agente de programacion software** en modo solo lectura.\n\nInspeccioné 12 archivos, la rama `main` y 3 documento(s).\n\nLas pruebas configuradas pasaron.\n\nNo encontré problemas en las comprobaciones disponibles.\n\nNo modifiqué archivos ni ejecuté comandos recibidos desde el chat.",
+      "claudeReasoning": "Revisión completada: 0 hallazgo(s) detectados. 0 de alta prioridad.",
+      "toolPills": [
+        {
+          "icon": "📄",
+          "label": "read_context",
+          "text": "Inspeccioné 12 archivos del proyecto"
+        },
+        {
+          "icon": "📑",
+          "label": "inspect_files",
+          "text": "Revisé package.json, README.md, AGENTS.md y archivos clave"
+        },
+        {
+          "icon": "🌿",
+          "label": "git_status",
+          "text": "Rama: main"
+        },
+        {
+          "icon": "🧪",
+          "label": "run_tests",
+          "text": "Pruebas: passed"
+        }
+      ],
+      "review": {
+        "ok": true,
+        "project": "agente de programacion software",
+        "root": "/Users/andressanabria/Desktop/iankaphone web/agente de programacion software",
+        "inspectedFiles": [
+          "AGENTS.md",
+          "README.md",
+          "app.js",
+          "chat.css",
+          "dashboard-correcciones.zip",
+          "index.html",
+          "package.json",
+          "public/app.js",
+          "public/index.html",
+          "public/styles.css",
+          "server.js",
+          "styles.css"
+        ],
+        "inspectedDocuments": [
+          "AGENTS.md",
+          "README.md",
+          "package.json"
+        ],
+        "git": {
+          "available": true,
+          "branch": "main",
+          "changedFiles": [
+            "M data/state.json",
+            " M public/app.js",
+            " M public/index.html",
+            " M public/styles.css",
+            " M server.js"
+          ]
+        },
+        "tests": {
+          "status": "passed",
+          "command": "npm test",
+          "output": "\n> agente-programacion-software@0.1.0 test\n> node --test\n\nℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 16.532669\n"
+        },
+        "findings": [],
+        "summary": "Revisión real completada: se inspeccionaron 12 archivos y no se detectaron hallazgos en las comprobaciones disponibles. No se modificaron archivos.",
+        "completedAt": "2026-08-08T04:46:57.451Z"
+      },
+      "worktreeBranch": "main",
+      "createdAt": "2026-08-08T04:46:57.452Z",
+      "updatedAt": "2026-08-08T04:46:57.452Z"
+    },
+    {
+      "id": "run_0b4ab027",
+      "conversationId": "conv_main",
+      "messageId": "msg_07e18a14",
+      "intent": "review",
+      "status": "completed",
+      "progress": 100,
+      "archReasoning": "Revisé **agente de programacion software** en modo solo lectura.\n\nInspeccioné 12 archivos, la rama `main` y 3 documento(s).\n\nLas pruebas configuradas pasaron.\n\nEncontré 1 hallazgo(s); 1 son críticos o altos.\n\nNo modifiqué archivos ni ejecuté comandos recibidos desde el chat.",
+      "claudeReasoning": "Revisión completada: 1 hallazgo(s) detectados. 1 de alta prioridad.",
+      "toolPills": [
+        {
+          "icon": "📄",
+          "label": "read_context",
+          "text": "Inspeccioné 12 archivos del proyecto"
+        },
+        {
+          "icon": "📑",
+          "label": "inspect_files",
+          "text": "Revisé package.json, README.md, AGENTS.md y archivos clave"
+        },
+        {
+          "icon": "🌿",
+          "label": "git_status",
+          "text": "Rama: main"
+        },
+        {
+          "icon": "🧪",
+          "label": "run_tests",
+          "text": "Pruebas: passed"
+        }
+      ],
+      "review": {
+        "ok": true,
+        "project": "agente de programacion software",
+        "root": "/Users/andressanabria/Desktop/iankaphone web/agente de programacion software",
+        "inspectedFiles": [
+          "AGENTS.md",
+          "README.md",
+          "app.js",
+          "chat.css",
+          "dashboard-correcciones.zip",
+          "index.html",
+          "package.json",
+          "public/app.js",
+          "public/index.html",
+          "public/styles.css",
+          "server.js",
+          "styles.css"
+        ],
+        "inspectedDocuments": [
+          "AGENTS.md",
+          "README.md",
+          "package.json"
+        ],
+        "git": {
+          "available": true,
+          "branch": "main",
+          "changedFiles": [
+            "M data/state.json",
+            " M public/index.html",
+            " M server.js"
+          ]
+        },
+        "tests": {
+          "status": "passed",
+          "command": "npm test",
+          "output": "\n> agente-programacion-software@0.1.0 test\n> node --test\n\nℹ tests 0\nℹ suites 0\nℹ pass 0\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 16.531383\n"
+        },
+        "findings": [
+          {
+            "severity": "critical",
+            "title": "La ejecución de agentes todavía está simulada",
+            "evidence": "El servidor contiene una respuesta que declara una ejecución simulada como correcta.",
+            "recommendation": "Conecta el orquestador a un worker real y no afirmes que se modificó código si solo se avanzó una etapa."
+          }
+        ],
+        "summary": "Revisión real completada: se inspeccionaron 12 archivos y se encontraron 1 hallazgos (1 críticos, 0 altos, 0 medios). No se modificaron archivos.",
+        "completedAt": "2026-08-08T04:43:52.148Z"
+      },
+      "worktreeBranch": "main",
+      "createdAt": "2026-08-08T04:43:52.148Z",
+      "updatedAt": "2026-08-08T04:43:52.148Z"
+    },
+    {
+      "id": "run_40661f2c",
+      "conversationId": "conv_main",
+      "messageId": "msg_85d5eac5",
+      "intent": "instruction",
+      "status": "completed",
+      "progress": 100,
+      "archReasoning": "Entiendo tu solicitud: “PUEDES CONECTARTE A MI GIT HUB”. Para darte una respuesta basada en el proyecto, pide una revisión, por ejemplo: “Revisa el sistema y dime qué problemas tiene”.",
+      "claudeReasoning": "Análisis en espera de worker real.",
+      "toolPills": [
+        {
+          "icon": "📝",
+          "label": "chat",
+          "text": "Procesando: \"PUEDES CONECTARTE A MI GIT HUB...\""
+        }
+      ],
+      "review": null,
+      "worktreeBranch": "main",
+      "createdAt": "2026-08-08T04:43:37.960Z",
+      "updatedAt": "2026-08-08T04:43:37.960Z"
+    },
     {
       "id": "run_d2908c8e",
       "conversationId": "conv_main",
@@ -299,6 +618,24 @@
     }
   ],
   "events": [
+    {
+      "id": "evt_1c23030e",
+      "type": "success",
+      "message": "Revisión conversacional completada",
+      "createdAt": "2026-08-08T04:46:57.452Z"
+    },
+    {
+      "id": "evt_c25d6fe6",
+      "type": "success",
+      "message": "Revisión conversacional completada",
+      "createdAt": "2026-08-08T04:43:52.148Z"
+    },
+    {
+      "id": "evt_d78034ff",
+      "type": "agent",
+      "message": "Chat: PUEDES CONECTARTE A MI GIT HUB",
+      "createdAt": "2026-08-08T04:43:37.960Z"
+    },
     {
       "id": "evt_5e623e11",
       "type": "agent",

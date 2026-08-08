@@ -768,6 +768,12 @@ body.codex-theme {
 .sub-agent.claude { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
 .sub-agent.agy { background: rgba(99, 102, 241, 0.15); color: #a5b4fc; }
 
+/* Agent status dynamic borders */
+.sub-agent[data-status="connected"]   { border-color: rgba(16, 185, 129, 0.5); }
+.sub-agent[data-status="simulated"]   { border-color: rgba(245, 158, 11, 0.5); }
+.sub-agent[data-status="disconnected"] { border-color: rgba(239, 68, 68, 0.5); opacity: 0.65; }
+.sub-agent[data-status="loading"]     { border-color: rgba(100, 116, 139, 0.4); }
+
 /* ===== CHAT THREAD (CODEX STYLE) ===== */
 .chat-thread {
   display: flex;
