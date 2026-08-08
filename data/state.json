@@ -1,4 +1,13 @@
 {
+  "user": {
+    "id": "usr_andres_sanabria",
+    "name": "Andres Sanabria",
+    "githubHandle": "AndrewSanabria",
+    "antigravityId": "AGY-MAC-PRO-4173",
+    "status": "connected",
+    "connectedSince": "2026-08-08T04:26:43.312Z",
+    "role": "Software Architect & Antigravity User"
+  },
   "projects": [
     {
       "id": "proj_demo",
@@ -32,7 +41,7 @@
       "projectId": "proj_demo",
       "title": "Conversación principal",
       "createdAt": "2026-08-08T04:26:43.313Z",
-      "updatedAt": "2026-08-08T04:27:19.026Z"
+      "updatedAt": "2026-08-08T04:33:12.399Z"
     }
   ],
   "messages": [
@@ -115,9 +124,46 @@
       "kind": "blocked",
       "review": null,
       "createdAt": "2026-08-08T04:27:19.026Z"
+    },
+    {
+      "id": "msg_0187c1e3",
+      "conversationId": "conv_main",
+      "role": "user",
+      "content": "HOLA",
+      "createdAt": "2026-08-08T04:33:12.399Z"
+    },
+    {
+      "id": "msg_63d78217",
+      "conversationId": "conv_main",
+      "role": "assistant",
+      "content": "Entiendo tu solicitud: “HOLA”. Para darte una respuesta basada en el proyecto, pide una revisión, por ejemplo: “Revisa el sistema y dime qué problemas tiene”.",
+      "kind": "answer",
+      "review": null,
+      "createdAt": "2026-08-08T04:33:12.399Z"
     }
   ],
   "runs": [
+    {
+      "id": "run_ca07ea77",
+      "conversationId": "conv_main",
+      "messageId": "msg_63d78217",
+      "intent": "instruction",
+      "status": "completed",
+      "progress": 100,
+      "archReasoning": "Entiendo tu solicitud: “HOLA”. Para darte una respuesta basada en el proyecto, pide una revisión, por ejemplo: “Revisa el sistema y dime qué problemas tiene”.",
+      "claudeReasoning": "Análisis en espera de worker real.",
+      "toolPills": [
+        {
+          "icon": "📝",
+          "label": "chat",
+          "text": "Procesando: \"HOLA...\""
+        }
+      ],
+      "review": null,
+      "worktreeBranch": "main",
+      "createdAt": "2026-08-08T04:33:12.399Z",
+      "updatedAt": "2026-08-08T04:33:12.399Z"
+    },
     {
       "id": "run_f51af0d7",
       "conversationId": "conv_main",
@@ -226,6 +272,12 @@
   ],
   "events": [
     {
+      "id": "evt_0f7c3115",
+      "type": "agent",
+      "message": "Chat: HOLA",
+      "createdAt": "2026-08-08T04:33:12.399Z"
+    },
+    {
       "id": "evt_b23e93fb",
       "type": "error",
       "message": "Chat: Implementa un login con OAuth",
@@ -253,6 +305,6 @@
   "worker": {
     "status": "online",
     "name": "worker-local",
-    "lastHeartbeat": "2026-08-08T04:26:43.314Z"
+    "lastHeartbeat": "2026-08-08T04:29:19.629Z"
   }
 }
