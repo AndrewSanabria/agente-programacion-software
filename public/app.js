@@ -410,7 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const text = chatInputTextarea.value.trim();
     if (!text) return;
     chatInputTextarea.value = '';
-    const selectedModel = selectAiModel ? selectAiModel.value : 'GPT-4o (Arquitectura)';
+    const selectedModel = selectAiModel ? selectAiModel.value : 'Antigravity AI (Líder Orquestador)';
     const targetProjectId = appState.activeProjectId || (appState.projects[0] ? appState.projects[0].id : 'proj-1');
 
     try {

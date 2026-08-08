@@ -10,6 +10,26 @@ const DATA_DIR = path.join(ROOT, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const PORT = Number(process.env.PORT || 4173);
 
+// ===== ADAPTER REGISTRY (arquitectura preparada para conexiones reales) =====
+// Los adaptadores permanecen inactivos hasta que se configuren credenciales.
+// Ninguno conecta a producción ni lee secretos del repositorio (AGENTS.md).
+const adapters = {
+  openai:     { name: 'OpenAI GPT-4o',    status: 'not_configured', apiKeyEnv: 'OPENAI_API_KEY',     connected: false },
+  anthropic:  { name: 'Anthropic Claude', status: 'not_configured', apiKeyEnv: 'ANTHROPIC_API_KEY',  connected: false },
+  antigravity:{ name: 'Antigravity',      status: 'not_configured', endpointEnv: 'ANTIGRAVITY_URL',  connected: false }
+};
+
+function connectAdapter(adapterKey) {
+  const a = adapters[adapterKey];
+  if (!a) return false;
+  const secret = process.env[a.apiKeyEnv] || process.env[a.endpointEnv];
+  if (!secret) { a.status = 'missing_credentials'; return false; }
+  // TODO: implementar conexión real cuando haya credenciales disponibles
+  a.status = 'connected';
+  a.connected = true;
+  return true;
+}
+
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}_${crypto.randomBytes(4).toString('hex')}`;
 
