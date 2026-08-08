@@ -333,7 +333,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="chat-msg-avatar" style="background:var(--primary-glow);color:#fff;">✨</div>
             <div class="chat-msg-body">
               <div class="chat-msg-meta">
-                <strong>Codex Orquestador</strong>
+                <strong style="color:#a5b4fc;">✨ Antigravity AI (Líder Orquestador)</strong>
                 <span class="chat-msg-time">${timeStr}</span>
                 <span class="badge ${badgeClass}" style="margin-left:8px;font-size:10px;">${badgeLabel}</span>
               </div>
