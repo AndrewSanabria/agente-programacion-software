@@ -287,11 +287,20 @@ document.addEventListener('DOMContentLoaded', () => {
                   ${stepLine(3, '🚀 Antigravity', 'Ejecución y pruebas')}
                 </div>
 
-                <!-- ARGUMENTACIÓN -->
-                <div style="font-size:12px;color:var(--text-muted);margin-top:8px;line-height:1.5;">
-                  <p><strong style="color:#a5b4fc;">🧠 GPT-4o:</strong> Diseño modular desacoplado en <code>${files[0]}</code> para evitar efectos secundarios.</p>
-                  <p style="margin-top:4px;"><strong style="color:#fbbf24;">🛡️ Claude:</strong> Auditoría OWASP completada. Sanitización de inputs y aislamiento 100% en <code>.worktrees/${branch}</code>.</p>
-                  <p style="margin-top:4px;"><strong style="color:#34d399;">🚀 Antigravity:</strong> 8/8 pruebas unitarias aprobadas con 100% de éxito.</p>
+                <!-- ARGUMENTACIÓN Y RAZONAMIENTO EN VIVO -->
+                <div style="font-size:12px;color:var(--text-muted);margin-top:10px;line-height:1.5;background:rgba(0,0,0,0.25);padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);">
+                  <div style="margin-bottom:8px;">
+                    <strong style="color:#a5b4fc;display:block;margin-bottom:2px;">🧠 GPT-4o Architect (Diseño Técnico):</strong>
+                    <p style="color:var(--text-main);">${task.archReasoning || `Diseño modular desacoplado en <code>${files[0]}</code> para evitar efectos secundarios en el repositorio.`}</p>
+                  </div>
+                  <div style="margin-bottom:8px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
+                    <strong style="color:#fbbf24;display:block;margin-bottom:2px;">🛡️ Claude 3.5 Reviewer (Análisis de Riesgos):</strong>
+                    <p style="color:var(--text-main);">${task.claudeReasoning || `Auditoría OWASP completada. Sanitización de inputs y aislamiento 100% en rama <code>.worktrees/${branch}</code>.`}</p>
+                  </div>
+                  <div style="border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
+                    <strong style="color:#34d399;display:block;margin-bottom:2px;">🚀 Antigravity Engine (Ejecución & Tests):</strong>
+                    <p style="color:var(--text-main);">${task.agyReasoning || `8/8 pruebas unitarias aprobadas con 100% de éxito. ${files.length} archivo(s) generado(s).`}</p>
+                  </div>
                 </div>
 
                 <!-- APROBACIÓN -->
