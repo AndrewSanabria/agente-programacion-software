@@ -8,33 +8,22 @@ document.addEventListener('DOMContentLoaded', () => {
     selectedTaskId: null,
     activeProjectId: null,
     planMode: true,
-    isDiffExpanded: false,
-    activeStepIndex: undefined,
+    // Chat messages per project: { 'proj-1': [{role, content, task, timestamp}], ... }
+    chatMessages: {},
+    liveRunningTaskId: null,
+    liveStepIndex: undefined,
     liveInterval: null,
     timerInterval: null,
-    liveTimerSeconds: 0,
-    liveSubagentsLogs: [],
-    liveRunningTaskId: null
+    liveTimerSecs: 0
   };
 
   // ===== UI ELEMENTS =====
   const tasksListSidebar = document.getElementById('tasks-list-sidebar');
   const projectsListSidebar = document.getElementById('projects-list-sidebar');
   const currentTaskTitle = document.getElementById('current-task-title');
-  const currentProjectTag = document.getElementById('current-project-tag');
-  const completedStepsTableBody = document.getElementById('completed-steps-table-body');
-  const filesChangedBar = document.getElementById('files-changed-bar');
-  const filesChangedCount = document.getElementById('files-changed-count');
-  const diffAddDel = document.getElementById('diff-add-del');
-  const diffPanelContent = document.getElementById('diff-panel-content');
-  const diffCodeText = document.getElementById('diff-code-text');
-  const btnUndoChanges = document.getElementById('btn-undo-changes');
-  const userPromptText = document.getElementById('user-prompt-text');
-  const executionTimeLabel = document.getElementById('execution-time-label');
-  const subagentsExecutionList = document.getElementById('subagents-execution-list');
-  const alertStatusBar = document.getElementById('alert-status-bar');
-  const alertMsgText = document.getElementById('alert-msg-text');
-  const btnCloseAlert = document.getElementById('btn-close-alert');
+  const headerProjectSelect = document.getElementById('header-project-select');
+  const chatProjectSelect = document.getElementById('chat-project-select');
+  const chatThread = document.getElementById('chat-thread');
   const chatInputTextarea = document.getElementById('chat-input-textarea');
   const btnSendInstruction = document.getElementById('btn-send-instruction');
   const btnTogglePlanMode = document.getElementById('btn-toggle-plan-mode');
@@ -45,38 +34,30 @@ document.addEventListener('DOMContentLoaded', () => {
   const checklistItemsContainer = document.getElementById('checklist-items-container');
   const progressRatioBadge = document.getElementById('progress-ratio-badge');
   const completedTasksLabel = document.getElementById('completed-tasks-label');
-  const headerProjectSelect = document.getElementById('header-project-select');
-  const chatProjectSelect = document.getElementById('chat-project-select');
-  const agentChatResponsesContainer = document.getElementById('agent-chat-responses-container');
-  const reasoningStatusText = document.getElementById('reasoning-status-text');
+  const btnCloseAlert = document.getElementById('btn-close-alert');
+  const alertStatusBar = document.getElementById('alert-status-bar');
+  const workspaceScrollArea = document.getElementById('workspace-scroll-area');
 
-  // ===== HELPER: Get tasks filtered by active project =====
+  // ===== HELPERS =====
   function getProjectTasks() {
     if (!appState.activeProjectId) return appState.tasks;
     return appState.tasks.filter(t => t.projectId === appState.activeProjectId);
   }
-
   function getActiveProject() {
     return appState.projects.find(p => p.id === appState.activeProjectId) || appState.projects[0] || null;
   }
-
-  // ===== DIFF ACCORDION =====
-  if (filesChangedBar) {
-    filesChangedBar.addEventListener('click', () => {
-      appState.isDiffExpanded = !appState.isDiffExpanded;
-      if (diffPanelContent) diffPanelContent.classList.toggle('hidden', !appState.isDiffExpanded);
-    });
+  function getProjectMessages() {
+    const pid = appState.activeProjectId || 'default';
+    if (!appState.chatMessages[pid]) appState.chatMessages[pid] = [];
+    return appState.chatMessages[pid];
   }
-  if (btnUndoChanges) {
-    btnUndoChanges.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (confirm('¿Deseas deshacer los cambios de este worktree y restaurar estado limpio?')) {
-        alert('Cambios del worktree revertidos con éxito.');
-      }
-    });
+  function scrollToBottom() {
+    if (workspaceScrollArea) {
+      setTimeout(() => { workspaceScrollArea.scrollTop = workspaceScrollArea.scrollHeight; }, 80);
+    }
   }
 
-  // ===== PLAN MODE TOGGLE =====
+  // ===== PLAN MODE =====
   if (btnTogglePlanMode) {
     btnTogglePlanMode.addEventListener('click', () => {
       appState.planMode = !appState.planMode;
@@ -89,99 +70,68 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnNewTask) {
     btnNewTask.addEventListener('click', () => {
       appState.selectedTaskId = null;
-      renderEmptyCanvas();
+      currentTaskTitle.textContent = 'Nueva Conversación';
       chatInputTextarea.focus();
     });
   }
 
-  // ===== API FETCHING =====
-  async function fetchStatus() {
-    try {
-      const res = await fetch('/api/status');
-      const data = await res.json();
-      if (data.ok) appState.status = data;
-    } catch (e) {}
+  // ===== CLOSE ALERT =====
+  if (btnCloseAlert && alertStatusBar) {
+    btnCloseAlert.addEventListener('click', () => { alertStatusBar.style.display = 'none'; });
   }
 
+  // ===== API FETCHING =====
+  async function fetchStatus() {
+    try { const r = await fetch('/api/status'); const d = await r.json(); if (d.ok) appState.status = d; } catch(e){}
+  }
   async function fetchProjects() {
     try {
-      const res = await fetch('/api/projects');
-      const data = await res.json();
-      if (data.ok) {
-        appState.projects = data.projects;
-        if (!appState.activeProjectId && data.projects.length > 0) {
-          appState.activeProjectId = data.projects[0].id;
-        }
+      const r = await fetch('/api/projects'); const d = await r.json();
+      if (d.ok) {
+        appState.projects = d.projects;
+        if (!appState.activeProjectId && d.projects.length > 0) appState.activeProjectId = d.projects[0].id;
         renderProjectSelectors();
         renderProjectsSidebar();
       }
-    } catch (e) {}
+    } catch(e){}
   }
-
   async function fetchTasks() {
     try {
-      const res = await fetch('/api/tasks');
-      const data = await res.json();
-      if (data.ok) {
-        appState.tasks = data.tasks;
-        // Auto-select first task of the active project if none selected
-        const projectTasks = getProjectTasks();
-        if (projectTasks.length > 0) {
-          const currentStillValid = projectTasks.find(t => t.id === appState.selectedTaskId);
-          if (!currentStillValid) {
-            appState.selectedTaskId = projectTasks[0].id;
-          }
-        } else {
-          appState.selectedTaskId = null;
-        }
+      const r = await fetch('/api/tasks'); const d = await r.json();
+      if (d.ok) {
+        appState.tasks = d.tasks;
+        const pt = getProjectTasks();
+        if (pt.length > 0) {
+          if (!pt.find(t => t.id === appState.selectedTaskId)) appState.selectedTaskId = pt[0].id;
+        } else { appState.selectedTaskId = null; }
         renderTasksSidebar();
-        if (appState.selectedTaskId) {
-          renderWorkspaceCanvas();
-          renderRightInspector();
-        } else {
-          renderEmptyCanvas();
-        }
+        renderRightInspector();
       }
-    } catch (e) {}
+    } catch(e){}
   }
 
   // ===== PROJECT SELECTORS =====
   function renderProjectSelectors() {
-    const opts = appState.projects.map(p => `
-      <option value="${p.id}" ${p.id === appState.activeProjectId ? 'selected' : ''}>
-        📁 ${p.name}
-      </option>
-    `).join('');
-    if (headerProjectSelect) {
-      headerProjectSelect.innerHTML = opts;
-      headerProjectSelect.onchange = (e) => setActiveProject(e.target.value);
-    }
-    if (chatProjectSelect) {
-      chatProjectSelect.innerHTML = opts;
-      chatProjectSelect.onchange = (e) => setActiveProject(e.target.value);
-    }
+    const opts = appState.projects.map(p =>
+      `<option value="${p.id}" ${p.id === appState.activeProjectId ? 'selected' : ''}>📁 ${p.name}</option>`
+    ).join('');
+    if (headerProjectSelect) { headerProjectSelect.innerHTML = opts; headerProjectSelect.onchange = e => setActiveProject(e.target.value); }
+    if (chatProjectSelect) { chatProjectSelect.innerHTML = opts; chatProjectSelect.onchange = e => setActiveProject(e.target.value); }
   }
 
   function setActiveProject(projectId) {
     appState.activeProjectId = projectId;
-    // Reset selected task to first task of new project
-    const projectTasks = getProjectTasks();
-    appState.selectedTaskId = projectTasks.length > 0 ? projectTasks[0].id : null;
-    // Stop any live execution from previous project
+    const pt = getProjectTasks();
+    appState.selectedTaskId = pt.length > 0 ? pt[0].id : null;
     if (appState.liveInterval) clearInterval(appState.liveInterval);
     if (appState.timerInterval) clearInterval(appState.timerInterval);
     appState.liveRunningTaskId = null;
-    appState.activeStepIndex = undefined;
-    // Re-render everything
+    appState.liveStepIndex = undefined;
     renderProjectSelectors();
     renderProjectsSidebar();
     renderTasksSidebar();
-    if (appState.selectedTaskId) {
-      renderWorkspaceCanvas();
-      renderRightInspector();
-    } else {
-      renderEmptyCanvas();
-    }
+    renderChatThread();
+    renderRightInspector();
   }
 
   // ===== LEFT SIDEBAR: PROJECTS =====
@@ -198,298 +148,224 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // ===== LEFT SIDEBAR: TASKS (FILTERED BY PROJECT) =====
+  // ===== LEFT SIDEBAR: TASKS (FILTERED) =====
   function renderTasksSidebar() {
     if (!tasksListSidebar) return;
-    const projectTasks = getProjectTasks();
-    if (projectTasks.length === 0) {
-      tasksListSidebar.innerHTML = `<div style="padding: 12px; color: var(--text-dim); font-size: 12px; text-align: center;">Sin tareas en este proyecto.<br>Escribe una instrucción abajo.</div>`;
+    const pt = getProjectTasks();
+    if (pt.length === 0) {
+      tasksListSidebar.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:12px;text-align:center;">Sin tareas.<br>Escribe una instrucción.</div>';
       return;
     }
-    tasksListSidebar.innerHTML = projectTasks.map(t => `
+    tasksListSidebar.innerHTML = pt.map(t => `
       <div class="tree-item ${t.id === appState.selectedTaskId ? 'active' : ''}" data-task-id="${t.id}">
         <span class="status-dot ${t.status === 'approved' ? 'green' : t.status === 'rejected' ? 'red' : 'yellow'}"></span>
-        <span style="overflow: hidden; text-overflow: ellipsis;">${t.title}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;">${t.title}</span>
       </div>
     `).join('');
     document.querySelectorAll('#tasks-list-sidebar .tree-item').forEach(el => {
       el.addEventListener('click', () => {
         appState.selectedTaskId = el.dataset.taskId;
         renderTasksSidebar();
-        renderWorkspaceCanvas();
         renderRightInspector();
       });
     });
   }
 
-  // ===== EMPTY CANVAS (no tasks for this project) =====
-  function renderEmptyCanvas() {
+  // ===== CHAT THREAD RENDERING (CODEX STYLE) =====
+  function renderChatThread() {
+    if (!chatThread) return;
     const proj = getActiveProject();
-    currentTaskTitle.textContent = 'Nueva Tarea';
-    userPromptText.textContent = `Escribe una instrucción para el proyecto ${proj ? proj.name : ''} en la barra inferior...`;
-    completedStepsTableBody.innerHTML = '';
-    if (agentChatResponsesContainer) {
-      agentChatResponsesContainer.innerHTML = `
-        <div style="text-align: center; padding: 40px 20px; color: var(--text-dim);">
-          <p style="font-size: 32px; margin-bottom: 12px;">✨</p>
-          <p style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 6px;">Antigravity Agent listo para trabajar</p>
-          <p style="font-size: 13px;">Proyecto activo: <strong style="color: var(--primary);">${proj ? proj.name : 'Ninguno'}</strong></p>
-          <p style="font-size: 12.5px; margin-top: 8px;">Escribe tu instrucción en la barra inferior y presiona Enter para iniciar la ejecución de los agentes.</p>
+    const projName = proj ? proj.name : 'proyecto';
+    const messages = getProjectMessages();
+
+    if (messages.length === 0) {
+      currentTaskTitle.textContent = 'Nueva Conversación';
+      chatThread.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:40px 20px;color:var(--text-dim);">
+          <p style="font-size:36px;margin-bottom:12px;">✨</p>
+          <p style="font-size:16px;font-weight:600;color:#fff;">Antigravity Agent</p>
+          <p style="font-size:13px;margin-top:4px;">Proyecto activo: <strong style="color:var(--primary);">${projName}</strong></p>
+          <p style="font-size:12.5px;margin-top:10px;max-width:400px;text-align:center;line-height:1.5;">
+            Escribe una instrucción abajo para iniciar. Los agentes GPT-4o, Claude 3.5 y Antigravity trabajarán en tu código de forma aislada y segura.
+          </p>
         </div>
       `;
-    }
-    if (subagentsExecutionList) subagentsExecutionList.innerHTML = '';
-    if (reasoningStatusText) reasoningStatusText.textContent = '';
-    if (executionTimeLabel) executionTimeLabel.textContent = '';
-    plansListContainer.innerHTML = '';
-    checklistItemsContainer.innerHTML = '';
-    progressRatioBadge.textContent = '0/0';
-    completedTasksLabel.textContent = '0 completed';
-  }
-
-  // ===== LIVE EXECUTION SIMULATION =====
-  function startLiveExecutionRunner(taskId) {
-    if (appState.liveInterval) clearInterval(appState.liveInterval);
-    if (appState.timerInterval) clearInterval(appState.timerInterval);
-    appState.activeStepIndex = 0;
-    appState.liveTimerSeconds = 0;
-    appState.liveRunningTaskId = taskId;
-    appState.liveSubagentsLogs = [
-      '🤖 SubAgent Explore · Analizando repositorio y contexto de la instrucción...'
-    ];
-    appState.timerInterval = setInterval(() => {
-      appState.liveTimerSeconds += 1;
-      const mins = Math.floor(appState.liveTimerSeconds / 60);
-      const secs = appState.liveTimerSeconds % 60;
-      if (executionTimeLabel) executionTimeLabel.textContent = mins > 0 ? `${mins} m ${secs} s` : `${secs} s`;
-    }, 1000);
-    appState.liveInterval = setInterval(() => {
-      appState.activeStepIndex += 1;
-      if (appState.activeStepIndex === 1) {
-        appState.liveSubagentsLogs.push('🛡️ SubAgent Security · Auditando vulnerabilidades y permisos...');
-      } else if (appState.activeStepIndex === 2) {
-        appState.liveSubagentsLogs.push('🌿 SubAgent GitWorker · Aislando entorno en .worktrees/feat-...');
-      } else if (appState.activeStepIndex === 3) {
-        appState.liveSubagentsLogs.push('🚀 SubAgent Antigravity · Modificando archivos y ejecutando tests unitarios...');
-      } else if (appState.activeStepIndex >= 4) {
-        appState.liveSubagentsLogs.push('✅ SubAgent TestRunner · 8/8 pruebas unitarias aprobadas al 100%');
-        clearInterval(appState.liveInterval);
-        clearInterval(appState.timerInterval);
-        appState.liveRunningTaskId = null;
-      }
-      renderWorkspaceCanvas();
-    }, 2200);
-  }
-
-  // ===== MAIN WORKSPACE CANVAS =====
-  function renderWorkspaceCanvas() {
-    const currentTask = appState.tasks.find(t => t.id === appState.selectedTaskId);
-    if (!currentTask) { renderEmptyCanvas(); return; }
-
-    const currentProj = appState.projects.find(p => p.id === currentTask.projectId) || getActiveProject();
-    const isTaskRunning = (appState.liveRunningTaskId === currentTask.id && appState.activeStepIndex !== undefined && appState.activeStepIndex < 4);
-    const activeStep = isTaskRunning ? appState.activeStepIndex : 4;
-
-    currentTaskTitle.textContent = currentTask.title;
-    userPromptText.textContent = currentTask.description || currentTask.title;
-
-    if (reasoningStatusText) {
-      reasoningStatusText.textContent = isTaskRunning
-        ? `Ejecutando paso ${activeStep + 1} de 4 en [${currentProj ? currentProj.name : ''}]`
-        : `Análisis completado en [${currentProj ? currentProj.name : ''}]`;
+      return;
     }
 
-    // ===== AGENT RESPONSE CARDS =====
-    if (agentChatResponsesContainer) {
-      const isApproved = currentTask.status === 'approved';
-      const isRejected = currentTask.status === 'rejected';
-      const projName = currentProj ? currentProj.name : 'proyecto';
-      const files = currentTask.diff ? currentTask.diff.filesChanged : ['src/module.ts'];
-      const patch = currentTask.diff ? currentTask.diff.patch : '';
-      const branch = currentTask.worktreeBranch || 'feat/task';
-
-      const getStepHtml = (stepIdx, label, detail) => {
-        if (activeStep > stepIdx) {
-          return `<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;">
-            <span>${label}: ${detail}</span>
-            <span style="color:var(--success);font-weight:bold;">✓ Completado</span>
-          </div>`;
-        } else if (activeStep === stepIdx) {
-          return `<div style="display:flex;align-items:center;justify-content:space-between;background:rgba(245,158,11,0.15);padding:5px 8px;border-radius:4px;">
-            <span style="color:#fbbf24;font-weight:600;">⚡ ${label}: ${detail}</span>
-            <span class="badge warning" style="animation:pulseGlow 1.2s infinite;">⚡ EJECUTANDO...</span>
-          </div>`;
-        } else {
-          return `<div style="display:flex;align-items:center;justify-content:space-between;opacity:0.45;padding:3px 0;">
-            <span>⌛ ${label}: ${detail}</span>
-            <span style="color:var(--text-dim);">En espera</span>
-          </div>`;
-        }
-      };
-
-      agentChatResponsesContainer.innerHTML = `
-        <!-- CARD 1: PLAN DE CAMBIOS & HERRAMIENTAS -->
-        <div class="agent-response-card" style="border:1px solid var(--primary-glow);background:rgba(14,20,34,0.95);">
-          <div class="agent-card-author">
-            <span>✨ Antigravity Agent — Proyecto: <strong>${projName}</strong></span>
-            <span class="badge secondary" style="margin-left:auto;">Worktree Aislado</span>
-          </div>
-
-          <p style="font-size:14px;font-weight:700;color:#fff;margin-bottom:10px;">
-            📌 Tarea: "${currentTask.title}"
-          </p>
-
-          <!-- QUÉ VA A EJECUTAR -->
-          <div style="background:rgba(99,102,241,0.1);border:1px solid var(--primary-glow);padding:12px 14px;border-radius:8px;font-size:13px;margin-bottom:12px;color:#e2e8f0;">
-            <strong style="color:#a5b4fc;display:block;margin-bottom:6px;">🛠️ Plan de Cambios a Realizar:</strong>
-            <ul style="margin-left:18px;line-height:1.7;">
-              <li><strong>Archivos a crear/modificar:</strong> ${files.map(f => '<code>' + f + '</code>').join(', ')}</li>
-              <li><strong>Rama aislada:</strong> <code>.worktrees/${branch}</code></li>
-              <li><strong>Herramientas:</strong> <code>view_file</code> → <code>replace_file_content</code> → <code>run_command (npm test)</code></li>
-              <li><strong>Validación:</strong> 8 pruebas unitarias automatizadas</li>
-            </ul>
-          </div>
-
-          <!-- TOOL CALL PILLS -->
-          <div style="display:flex;flex-direction:column;gap:5px;margin:8px 0;">
-            <div style="font-family:var(--font-code);font-size:11.5px;background:rgba(99,102,241,0.1);border:1px solid var(--primary-glow);padding:6px 10px;border-radius:6px;color:#a5b4fc;">
-              🔨 <strong>view_file</strong> → <code>${projName}/package.json</code>, <code>${files[0]}</code>
-            </div>
-            <div style="font-family:var(--font-code);font-size:11.5px;background:rgba(16,185,129,0.1);border:1px solid var(--success);padding:6px 10px;border-radius:6px;color:#34d399;">
-              📝 <strong>replace_file_content</strong> → <code>${files[0]}</code> (+23 -15 lines)
-            </div>
-            <div style="font-family:var(--font-code);font-size:11.5px;background:rgba(245,158,11,0.1);border:1px solid var(--warning);padding:6px 10px;border-radius:6px;color:#fbbf24;">
-              ⚡ <strong>run_command</strong> → <code>npm test -- --coverage</code> (8/8 passed ✓)
+    chatThread.innerHTML = messages.map((msg, idx) => {
+      if (msg.role === 'user') {
+        return `
+          <div class="chat-msg chat-msg-user">
+            <div class="chat-msg-avatar">A</div>
+            <div class="chat-msg-body">
+              <div class="chat-msg-meta"><strong>Tú</strong> <span class="chat-msg-time">${msg.timestamp}</span></div>
+              <div class="chat-msg-content">${msg.content}</div>
             </div>
           </div>
-
-          <!-- RESULTADO: CÓDIGO GENERADO -->
-          <div style="background:rgba(0,0,0,0.4);padding:14px;border-radius:8px;margin-top:12px;">
-            <strong style="color:#34d399;display:block;margin-bottom:6px;">🎯 Resultado — Código Generado:</strong>
-            <pre style="font-family:var(--font-code);font-size:11.5px;color:#a7f3d0;background:#060911;padding:12px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;border:1px solid var(--codex-border);max-height:200px;overflow-y:auto;">${patch || 'Sin cambios de código para esta tarea.'}</pre>
-          </div>
-
-          <!-- ARGUMENTACIÓN DE AGENTES -->
-          <div style="background:rgba(0,0,0,0.35);padding:14px;border-radius:8px;font-size:12.5px;margin-top:12px;display:flex;flex-direction:column;gap:10px;">
-            <div>
-              <strong style="color:#a5b4fc;display:block;margin-bottom:4px;">🧠 GPT-4o Architect:</strong>
-              <p style="color:var(--text-muted);">Para "${currentTask.title}" en <strong>${projName}</strong>, se diseñó un esquema modular desacoplado aislando la lógica en <code>${files[0]}</code> para prevenir efectos secundarios.</p>
-            </div>
-            <div style="border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">
-              <strong style="color:#fbbf24;display:block;margin-bottom:4px;">🛡️ Claude 3.5 Reviewer:</strong>
-              <p style="color:var(--text-muted);">Auditoría OWASP completada: sanitización de inputs, rate-limiting y bloqueo de comandos destructivos. Cambios 100% aislados en <code>.worktrees/${branch}</code>.</p>
-            </div>
-            <div style="border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">
-              <strong style="color:#34d399;display:block;margin-bottom:4px;">🚀 Antigravity Engine:</strong>
-              <p style="color:var(--text-muted);">Se ejecutaron <strong>8 pruebas unitarias</strong> con <strong>100% de éxito</strong> (0 fallas). Archivos modificados: ${files.length}.</p>
+        `;
+      } else if (msg.role === 'thinking') {
+        return `
+          <div class="chat-msg chat-msg-ai">
+            <div class="chat-msg-avatar" style="background:var(--primary-glow);color:#fff;">✨</div>
+            <div class="chat-msg-body">
+              <div class="chat-msg-meta"><strong>Antigravity</strong></div>
+              <div class="chat-msg-content" style="color:#fbbf24;">
+                <span style="animation:pulseGlow 1.2s infinite;">🧠 Pensando y analizando "${msg.content}"...</span>
+              </div>
             </div>
           </div>
-        </div>
+        `;
+      } else if (msg.role === 'ai') {
+        const task = msg.task;
+        if (!task) return '';
+        const files = task.diff ? task.diff.filesChanged : ['src/module.ts'];
+        const patch = task.diff ? task.diff.patch : '';
+        const branch = task.worktreeBranch || 'feat/task';
+        const isRunning = appState.liveRunningTaskId === task.id && appState.liveStepIndex !== undefined && appState.liveStepIndex < 4;
+        const step = isRunning ? appState.liveStepIndex : 4;
+        const isApproved = task.status === 'approved';
+        const isRejected = task.status === 'rejected';
 
-        <!-- CARD 2: ACTIVIDAD EN TIEMPO REAL -->
-        <div class="agent-response-card" style="border:1px solid ${isTaskRunning ? 'var(--warning)' : 'rgba(255,255,255,0.1)'};background:rgba(10,15,26,0.9);">
-          <div class="agent-card-author">
-            <span>⚡ Actividad de los Agentes en Vivo</span>
-            <span class="badge ${isTaskRunning ? 'warning' : 'success'}" style="margin-left:auto;">
-              ${isTaskRunning ? '⚡ EJECUTANDO EN TIEMPO REAL' : '✓ COMPLETADO'}
-            </span>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:6px;font-size:12.5px;">
-            ${getStepHtml(0, '🔍 GPT-4o Architect', 'Analizando requerimientos de "' + currentTask.title.slice(0, 28) + '..."')}
-            ${getStepHtml(1, '🛡️ Claude 3.5 Reviewer', 'Auditando permisos y riesgos de seguridad')}
-            ${getStepHtml(2, '🌿 Git Worker', 'Aislando rama .worktrees/' + branch)}
-            ${getStepHtml(3, '🚀 Antigravity Engine', 'Modificando archivos y ejecutando 8/8 pruebas')}
-          </div>
-        </div>
+        const stepLine = (si, lbl, det) => {
+          if (step > si) return `<div style="display:flex;justify-content:space-between;padding:2px 0;"><span>${lbl}: ${det}</span><span style="color:var(--success);font-weight:bold;">✓</span></div>`;
+          if (step === si) return `<div style="display:flex;justify-content:space-between;padding:3px 6px;background:rgba(245,158,11,0.12);border-radius:4px;"><span style="color:#fbbf24;font-weight:600;">⚡ ${lbl}: ${det}</span><span class="badge warning" style="animation:pulseGlow 1.2s infinite;font-size:10px;">EJECUTANDO...</span></div>`;
+          return `<div style="display:flex;justify-content:space-between;padding:2px 0;opacity:0.4;"><span>⌛ ${lbl}: ${det}</span><span>Espera</span></div>`;
+        };
 
-        <!-- CARD 3: PUERTA DE APROBACIÓN -->
-        <div class="agent-response-card" style="border:1px solid ${isApproved ? 'var(--success)' : isRejected ? 'var(--danger)' : 'var(--warning)'};background:rgba(18,24,40,0.95);">
-          <div class="agent-card-author">
-            <span>✋ Puerta de Aprobación Humana</span>
-            <span class="badge ${isApproved ? 'success' : isRejected ? 'danger' : 'warning'}" style="margin-left:auto;">
-              ${isApproved ? 'APROBADO & INTEGRADO' : isRejected ? 'RECHAZADO' : isTaskRunning ? 'EN EJECUCIÓN...' : 'PENDIENTE APROBACIÓN'}
-            </span>
-          </div>
-          <p style="font-size:13px;">
-            ${isApproved
-              ? '🎉 <strong>¡Cambios Aprobados!</strong> Se ejecutó el commit y la Pull Request fue registrada en <strong>' + projName + '</strong>.'
-              : isRejected
-              ? '❌ <strong>Tarea Rechazada.</strong> El worktree de <strong>' + projName + '</strong> fue revertido.'
-              : isTaskRunning
-              ? '⏳ <strong>Los agentes están trabajando en vivo...</strong> Los botones se habilitarán al finalizar.'
-              : '✅ Se completaron las modificaciones y <strong>8/8 pruebas pasaron</strong>. ¿Autorizas el commit en <strong>' + projName + '</strong>?'}
-          </p>
-          <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
-            ${!isApproved && !isRejected && !isTaskRunning ? `
-              <button class="btn btn-sm btn-success btn-approve-task" data-task-id="${currentTask.id}">✅ Aprobar Commit & PR</button>
-              <button class="btn btn-sm btn-danger btn-reject-task" data-task-id="${currentTask.id}">❌ Rechazar</button>
-            ` : ''}
-            <button class="btn btn-sm btn-outline btn-toggle-diff-view">📝 Ver Diffs</button>
-          </div>
-        </div>
-      `;
+        return `
+          <div class="chat-msg chat-msg-ai">
+            <div class="chat-msg-avatar" style="background:var(--primary-glow);color:#fff;">✨</div>
+            <div class="chat-msg-body">
+              <div class="chat-msg-meta">
+                <strong>Antigravity</strong>
+                <span class="chat-msg-time">${msg.timestamp}</span>
+                <span class="badge ${isApproved ? 'success' : isRejected ? 'danger' : isRunning ? 'warning' : 'secondary'}" style="margin-left:8px;font-size:10px;">
+                  ${isApproved ? '✓ APROBADO' : isRejected ? '✗ RECHAZADO' : isRunning ? '⚡ EN EJECUCIÓN' : '⏳ PENDIENTE'}
+                </span>
+              </div>
 
-      // Event listeners for action buttons
-      const approveBtn = agentChatResponsesContainer.querySelector('.btn-approve-task');
-      if (approveBtn) {
-        approveBtn.addEventListener('click', async () => {
-          await fetch('/api/tasks/' + currentTask.id + '/approve', { method: 'POST' });
-          refreshAll();
-        });
+              <!-- PLAN -->
+              <div class="chat-msg-content">
+                <p style="margin-bottom:8px;">He analizado tu solicitud <strong>"${task.title}"</strong> en el proyecto <strong>${projName}</strong>. Este es mi plan:</p>
+                
+                <div style="background:rgba(99,102,241,0.08);border:1px solid var(--primary-glow);padding:10px 12px;border-radius:8px;margin:8px 0;font-size:12.5px;">
+                  <strong style="color:#a5b4fc;">🛠️ Plan de Cambios:</strong>
+                  <ul style="margin:6px 0 0 16px;line-height:1.7;">
+                    <li>Crear/modificar: ${files.map(f=>'<code>'+f+'</code>').join(', ')}</li>
+                    <li>Rama aislada: <code>.worktrees/${branch}</code></li>
+                    <li>Tests: 8 pruebas unitarias automatizadas</li>
+                  </ul>
+                </div>
+
+                <!-- TOOL CALLS -->
+                <div style="display:flex;flex-direction:column;gap:4px;margin:8px 0;">
+                  <div style="font-family:var(--font-code);font-size:11px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.3);padding:5px 8px;border-radius:5px;color:#a5b4fc;">
+                    🔨 <strong>view_file</strong> → ${projName}/package.json, ${files[0]}
+                  </div>
+                  <div style="font-family:var(--font-code);font-size:11px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.3);padding:5px 8px;border-radius:5px;color:#34d399;">
+                    📝 <strong>replace_file_content</strong> → ${files[0]} (+23 -15)
+                  </div>
+                  <div style="font-family:var(--font-code);font-size:11px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);padding:5px 8px;border-radius:5px;color:#fbbf24;">
+                    ⚡ <strong>run_command</strong> → npm test --coverage (8/8 ✓)
+                  </div>
+                </div>
+
+                <!-- CÓDIGO GENERADO -->
+                ${patch ? `
+                <div style="margin:10px 0;">
+                  <strong style="color:#34d399;font-size:12px;">🎯 Código Generado:</strong>
+                  <pre style="font-family:var(--font-code);font-size:11px;color:#a7f3d0;background:#060911;padding:10px;border-radius:6px;margin-top:4px;max-height:160px;overflow:auto;white-space:pre-wrap;border:1px solid var(--codex-border);">${patch}</pre>
+                </div>` : ''}
+
+                <!-- AGENT ACTIVITY -->
+                <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;margin:8px 0;font-size:12px;display:flex;flex-direction:column;gap:5px;">
+                  <strong style="color:var(--text-muted);font-size:11px;">⚡ Actividad de Agentes:</strong>
+                  ${stepLine(0, '🔍 GPT-4o', 'Analizando requerimientos')}
+                  ${stepLine(1, '🛡️ Claude 3.5', 'Auditoría de seguridad')}
+                  ${stepLine(2, '🌿 Git Worker', 'Aislamiento en worktree')}
+                  ${stepLine(3, '🚀 Antigravity', 'Ejecución y pruebas')}
+                </div>
+
+                <!-- ARGUMENTACIÓN -->
+                <div style="font-size:12px;color:var(--text-muted);margin-top:8px;line-height:1.5;">
+                  <p><strong style="color:#a5b4fc;">🧠 GPT-4o:</strong> Diseño modular desacoplado en <code>${files[0]}</code> para evitar efectos secundarios.</p>
+                  <p style="margin-top:4px;"><strong style="color:#fbbf24;">🛡️ Claude:</strong> Auditoría OWASP completada. Sanitización de inputs y aislamiento 100% en <code>.worktrees/${branch}</code>.</p>
+                  <p style="margin-top:4px;"><strong style="color:#34d399;">🚀 Antigravity:</strong> 8/8 pruebas unitarias aprobadas con 100% de éxito.</p>
+                </div>
+
+                <!-- APROBACIÓN -->
+                <div style="margin-top:12px;padding:10px;border-radius:8px;border:1px solid ${isApproved ? 'var(--success)' : isRejected ? 'var(--danger)' : 'var(--warning)'};background:rgba(0,0,0,0.2);">
+                  <p style="font-size:12.5px;">
+                    ${isApproved ? '🎉 <strong>¡Aprobado!</strong> Commit y PR registrados en <strong>' + projName + '</strong>.'
+                      : isRejected ? '❌ <strong>Rechazado.</strong> Worktree revertido.'
+                      : isRunning ? '⏳ <strong>Agentes trabajando...</strong> Botones se habilitarán al finalizar.'
+                      : '✅ 8/8 pruebas pasaron. ¿Autorizas el commit en <strong>' + projName + '</strong>?'}
+                  </p>
+                  <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+                    ${!isApproved && !isRejected && !isRunning ? `
+                      <button class="btn btn-sm btn-success btn-approve-task" data-task-id="${task.id}">✅ Aprobar</button>
+                      <button class="btn btn-sm btn-danger btn-reject-task" data-task-id="${task.id}">❌ Rechazar</button>
+                    ` : ''}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
       }
-      const rejectBtn = agentChatResponsesContainer.querySelector('.btn-reject-task');
-      if (rejectBtn) {
-        rejectBtn.addEventListener('click', async () => {
-          await fetch('/api/tasks/' + currentTask.id + '/reject', { method: 'POST' });
-          refreshAll();
-        });
-      }
-      const toggleDiffBtn = agentChatResponsesContainer.querySelector('.btn-toggle-diff-view');
-      if (toggleDiffBtn && filesChangedBar) {
-        toggleDiffBtn.addEventListener('click', () => filesChangedBar.click());
-      }
-    }
+      return '';
+    }).join('');
 
-    // ===== STEPS TABLE =====
-    completedStepsTableBody.innerHTML = currentTask.steps.map((s, idx) => `
-      <tr>
-        <td style="width:30px;"><span class="step-check-icon">${activeStep >= idx ? '✓' : '⌛'}</span></td>
-        <td><strong>"${s.name}"</strong> → "${s.summary}"</td>
-        <td style="text-align:right;"><span class="step-file-code">${s.agent}</span></td>
-        <td style="width:40px;text-align:right;"><span style="color:${activeStep >= idx ? 'var(--success)' : 'var(--text-dim)'};font-weight:bold;">${activeStep >= idx ? '✓' : '⌛'}</span></td>
-      </tr>
-    `).join('');
+    // Bind approve/reject buttons
+    chatThread.querySelectorAll('.btn-approve-task').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        await fetch('/api/tasks/' + btn.dataset.taskId + '/approve', { method: 'POST' });
+        // Update local task status
+        const t = appState.tasks.find(x => x.id === btn.dataset.taskId);
+        if (t) t.status = 'approved';
+        renderChatThread();
+        renderTasksSidebar();
+        renderRightInspector();
+      });
+    });
+    chatThread.querySelectorAll('.btn-reject-task').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        await fetch('/api/tasks/' + btn.dataset.taskId + '/reject', { method: 'POST' });
+        const t = appState.tasks.find(x => x.id === btn.dataset.taskId);
+        if (t) t.status = 'rejected';
+        renderChatThread();
+        renderTasksSidebar();
+        renderRightInspector();
+      });
+    });
 
-    // ===== DIFF BAR =====
-    if (currentTask.diff) {
-      filesChangedCount.textContent = currentTask.diff.filesChanged.length + ' files changed';
-      diffCodeText.textContent = currentTask.diff.patch || 'No patch available.';
-    }
+    // Update header title
+    const lastAi = [...messages].reverse().find(m => m.role === 'ai');
+    if (lastAi && lastAi.task) currentTaskTitle.textContent = lastAi.task.title;
 
-    // ===== SUBAGENTS STREAM =====
-    const logs = (appState.liveRunningTaskId === currentTask.id && appState.liveSubagentsLogs)
-      ? appState.liveSubagentsLogs
-      : ['🤖 SubAgent Explore · Exploración del codebase completada',
-         '🛡️ SubAgent Security · Auditoría de vulnerabilidades completada',
-         '✅ SubAgent TestRunner · 8/8 pruebas unitarias aprobadas'];
-    subagentsExecutionList.innerHTML = logs.map(l => `
-      <div class="subagent-item"><span class="subagent-icon">🤖</span><span>${l}</span></div>
-    `).join('');
+    scrollToBottom();
   }
 
   // ===== RIGHT INSPECTOR =====
   function renderRightInspector() {
     const currentTask = appState.tasks.find(t => t.id === appState.selectedTaskId);
-    if (!currentTask) return;
     const proj = getActiveProject();
+    if (!currentTask) {
+      plansListContainer.innerHTML = '<div style="padding:8px;color:var(--text-dim);font-size:12px;">Sin planes activos</div>';
+      progressRatioBadge.textContent = '0/0';
+      completedTasksLabel.textContent = '0 completed';
+      checklistItemsContainer.innerHTML = '';
+      return;
+    }
     plansListContainer.innerHTML = `
       <div class="plan-item">📋 Plan: ${currentTask.title}</div>
-      ${proj ? '<div class="plan-item">📁 Proyecto: ' + proj.name + '</div>' : ''}
+      ${proj ? '<div class="plan-item">📁 ' + proj.name + '</div>' : ''}
     `;
-    const completedCount = currentTask.steps.filter(s => s.status === 'completed').length;
-    const totalCount = currentTask.steps.length;
-    progressRatioBadge.textContent = completedCount + '/' + totalCount;
-    completedTasksLabel.textContent = completedCount + ' completed';
+    const cc = currentTask.steps.filter(s => s.status === 'completed').length;
+    const tc = currentTask.steps.length;
+    progressRatioBadge.textContent = cc + '/' + tc;
+    completedTasksLabel.textContent = cc + ' completed';
     checklistItemsContainer.innerHTML = currentTask.steps.map(s => `
       <div class="check-item">
         <span class="check-icon-circle">${s.status === 'completed' ? '✓' : '○'}</span>
@@ -498,27 +374,75 @@ document.addEventListener('DOMContentLoaded', () => {
     `).join('');
   }
 
-  // ===== SUBMIT INSTRUCTION =====
+  // ===== LIVE EXECUTION SIMULATION =====
+  function startLiveExecution(taskId) {
+    if (appState.liveInterval) clearInterval(appState.liveInterval);
+    if (appState.timerInterval) clearInterval(appState.timerInterval);
+    appState.liveStepIndex = 0;
+    appState.liveTimerSecs = 0;
+    appState.liveRunningTaskId = taskId;
+
+    appState.liveInterval = setInterval(() => {
+      appState.liveStepIndex += 1;
+      if (appState.liveStepIndex >= 4) {
+        clearInterval(appState.liveInterval);
+        clearInterval(appState.timerInterval);
+        appState.liveRunningTaskId = null;
+        // Replace thinking with final AI message
+        const msgs = getProjectMessages();
+        const thinkIdx = msgs.findIndex(m => m.role === 'thinking');
+        if (thinkIdx !== -1) msgs.splice(thinkIdx, 1);
+        // Find the AI message and ensure it renders as completed
+      }
+      renderChatThread();
+    }, 2000);
+  }
+
+  // ===== SUBMIT INSTRUCTION (CHAT) =====
   async function handleSendInstruction() {
     const text = chatInputTextarea.value.trim();
     if (!text) return;
     chatInputTextarea.value = '';
-    const selectedModel = selectAiModel ? selectAiModel.value : 'GPT-4o (Arquitectura)';
-    const targetProjectId = appState.activeProjectId || (appState.projects[0] ? appState.projects[0].id : 'proj-1');
+    const model = selectAiModel ? selectAiModel.value : 'GPT-4o (Arquitectura)';
+    const pid = appState.activeProjectId || (appState.projects[0] ? appState.projects[0].id : 'proj-1');
+    const now = new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+
+    // 1. Add user message to chat
+    const msgs = getProjectMessages();
+    msgs.push({ role: 'user', content: text, timestamp: now });
+
+    // 2. Add thinking indicator
+    msgs.push({ role: 'thinking', content: text, timestamp: now });
+    renderChatThread();
+
+    // 3. Create task via API
     try {
       const res = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: text, projectId: targetProjectId, architectModel: selectedModel })
+        body: JSON.stringify({ title: text, projectId: pid, architectModel: model })
       });
       const data = await res.json();
       if (data.ok) {
         appState.selectedTaskId = data.task.id;
-        startLiveExecutionRunner(data.task.id);
-        refreshAll();
+        // Remove thinking, add AI response
+        const thinkIdx = msgs.findIndex(m => m.role === 'thinking');
+        if (thinkIdx !== -1) msgs.splice(thinkIdx, 1);
+        msgs.push({ role: 'ai', content: text, task: data.task, timestamp: now });
+        // Also add to global tasks
+        if (!appState.tasks.find(t => t.id === data.task.id)) {
+          appState.tasks.unshift(data.task);
+        }
+        startLiveExecution(data.task.id);
+        renderChatThread();
+        renderTasksSidebar();
+        renderRightInspector();
       }
     } catch (e) {
-      alert('Error enviando instrucción: ' + e.message);
+      const thinkIdx = msgs.findIndex(m => m.role === 'thinking');
+      if (thinkIdx !== -1) msgs.splice(thinkIdx, 1);
+      msgs.push({ role: 'ai', content: 'Error: ' + e.message, task: null, timestamp: now });
+      renderChatThread();
     }
   }
 
@@ -529,16 +453,15 @@ document.addEventListener('DOMContentLoaded', () => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendInstruction(); }
     });
   }
-  if (btnCloseAlert && alertStatusBar) {
-    btnCloseAlert.addEventListener('click', () => { alertStatusBar.style.display = 'none'; });
-  }
 
-  // ===== REFRESH ALL =====
+  // ===== REFRESH =====
   async function refreshAll() {
     await fetchStatus();
     await fetchProjects();
     await fetchTasks();
+    // Only render chat thread on initial load if no messages exist
+    if (getProjectMessages().length === 0) renderChatThread();
   }
   refreshAll();
-  setInterval(refreshAll, 5000);
+  setInterval(() => { fetchStatus(); fetchProjects(); fetchTasks(); }, 5000);
 });

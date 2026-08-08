@@ -108,71 +108,12 @@
         </div>
       </header>
 
-      <!-- Center Scrollable Content Body -->
+      <!-- Center Scrollable Chat Thread Body -->
       <div class="workspace-body" id="workspace-scroll-area">
         
-        <!-- Table of Completed Steps / Actions -->
-        <div class="completed-steps-card">
-          <table class="steps-table">
-            <tbody id="completed-steps-table-body">
-              <!-- Rendered dynamically -->
-            </tbody>
-          </table>
-        </div>
-
-        <!-- Files Changed Banner -->
-        <div class="files-changed-bar" id="files-changed-bar">
-          <div class="files-changed-info">
-            <span class="arrow-toggle">❯</span>
-            <span id="files-changed-count">5 files changed</span>
-            <span class="diff-add-del" id="diff-add-del">+23 -15</span>
-          </div>
-          <button class="btn-undo" id="btn-undo-changes">↶ Undo</button>
-        </div>
-
-        <!-- Diff Details Accordion Panel -->
-        <div class="diff-panel-collapsed hidden" id="diff-panel-content">
-          <pre class="diff-code-block" id="diff-code-text"></pre>
-        </div>
-
-        <!-- User Prompt Message Cards -->
-        <div class="user-prompt-card" id="user-prompt-display">
-          <p id="user-prompt-text">en funcion del objetivo, la ia debe realizar la configuracion acertada en segmentacion alcance maximizacion de resultados de acuerdo a la campaña, por ejemplo venta de iphone, debe segmentar el lugar intereses, comportamientos, y lugar donde e clientes quiere dirigir el objetivo</p>
-        </div>
-
-        <!-- Live Agent Chat Responses & Interactive Action Stream -->
-        <div class="agent-chat-responses-container" id="agent-chat-responses-container">
-          <!-- Rendered dynamically -->
-        </div>
-
-        <!-- Live Execution Stream & Subagent Cards -->
-        <div class="execution-stream-container">
-          <div class="execution-timer-badge">
-            Worked for <span id="execution-time-label">3 m 27 s</span>
-          </div>
-
-          <div class="reasoning-step-box">
-            <span class="brain-icon">🧠</span>
-            <span class="reasoning-text" id="reasoning-status-text">Thought for a few seconds</span>
-          </div>
-
-          <div class="subagents-list" id="subagents-execution-list">
-            <!-- Rendered dynamically -->
-          </div>
-        </div>
-
-        <!-- Alert Notification Bar -->
-        <div class="alert-bar" id="alert-status-bar">
-          <div class="alert-content">
-            <span class="alert-icon">⚠️</span>
-            <span class="alert-msg" id="alert-msg-text">Worker local conectado en 127.0.0.1:4173 | Git Worktree Aislado</span>
-          </div>
-          <div class="alert-actions">
-            <button class="btn-alert-sm" id="btn-show-details">Show details</button>
-            <button class="btn-alert-sm" id="btn-copy-logs">Copy</button>
-            <button class="btn-alert-sm" id="btn-report-issue">Report issue</button>
-            <button class="alert-close" id="btn-close-alert">✕</button>
-          </div>
+        <!-- CHAT THREAD: All messages render here like Codex -->
+        <div class="chat-thread" id="chat-thread">
+          <!-- Rendered dynamically: user messages + AI responses -->
         </div>
 
       </div>

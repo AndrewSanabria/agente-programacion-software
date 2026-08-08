@@ -681,9 +681,9 @@
       "title": "revisar los cambios",
       "description": "Instrucción asignada al equipo de agentes en el repositorio iankaphone-web.",
       "projectId": "proj-1",
-      "status": "pending_approval",
+      "status": "approved",
       "createdAt": "2026-08-08T02:21:12.600Z",
-      "updatedAt": "2026-08-08T02:21:12.600Z",
+      "updatedAt": "2026-08-08T03:10:12.328Z",
       "models": {
         "architect": "GPT-4o (Arquitectura)",
         "reviewer": "Claude 3.5 Sonnet (Riesgos)",
@@ -743,7 +743,7 @@
           "id": "s7",
           "name": "Aprobación Humana",
           "agent": "Human Gatekeeper",
-          "status": "in_progress",
+          "status": "completed",
           "timeMs": 0,
           "summary": "Pendiente de confirmación del usuario."
         }
@@ -1013,6 +1013,12 @@
     }
   ],
   "logs": [
+    {
+      "timestamp": "2026-08-08T03:10:12.328Z",
+      "level": "SUCCESS",
+      "module": "HumanGatekeeper",
+      "message": "Tarea \"revisar los cambios\" fue APROBADA. Commit ejecutado y Pull Request preparado."
+    },
     {
       "timestamp": "2026-08-08T03:04:18.076Z",
       "level": "SUCCESS",
