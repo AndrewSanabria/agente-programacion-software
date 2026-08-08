@@ -15,6 +15,15 @@ const id = (prefix) => `${prefix}_${crypto.randomBytes(4).toString('hex')}`;
 
 function seedState() {
   return {
+    user: {
+      id: 'usr_andres_sanabria',
+      name: 'Andres Sanabria',
+      githubHandle: 'AndrewSanabria',
+      antigravityId: 'AGY-MAC-PRO-4173',
+      status: 'connected',
+      connectedSince: now(),
+      role: 'Software Architect & Antigravity User'
+    },
     projects: [{
       id: 'proj_demo',
       name: 'agente de programacion software',
@@ -40,6 +49,7 @@ function seedState() {
     }],
     conversations: [{ id: 'conv_main', projectId: 'proj_demo', title: 'Conversación principal', createdAt: now(), updatedAt: now() }],
     messages: [],
+    runs: [],
     events: [
       { id: id('evt'), type: 'system', message: 'Worker local listo para recibir tareas', createdAt: now() },
       { id: id('evt'), type: 'success', message: 'Proyecto demo conectado', createdAt: now() }
@@ -64,6 +74,7 @@ function persist() { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)
 function ensureConversationState() {
   if (!Array.isArray(state.conversations)) state.conversations = [];
   if (!Array.isArray(state.messages)) state.messages = [];
+  if (!Array.isArray(state.runs)) state.runs = [];
   const firstProject = state.projects?.[0];
   if (firstProject && (!firstProject.githubUrl || /tu-organizacion/i.test(firstProject.githubUrl))) firstProject.githubUrl = 'https://github.com/AndrewSanabria/agente-programacion-software';
   if (!state.conversations.length && state.projects[0]) state.conversations.push({ id: id('conv'), projectId: state.projects[0].id, title: 'Conversación principal', createdAt: now(), updatedAt: now() });
@@ -215,6 +226,36 @@ function conversationFor(body = {}) {
   return conversation;
 }
 
+function createRunForMessage(conversationId, messageId, text, result) {
+  const isReview = result.type === 'review';
+  const run = {
+    id: id('run'),
+    conversationId,
+    messageId,
+    intent: isReview ? 'review' : 'instruction',
+    status: isReview ? 'completed' : (result.type === 'blocked' ? 'blocked' : 'completed'),
+    progress: 100,
+    archReasoning: result.text,
+    claudeReasoning: isReview && result.review
+      ? `Revisión completada: ${result.review.findings?.length || 0} hallazgo(s) detectados. ${(result.review.findings || []).filter(f => f.severity === 'critical' || f.severity === 'high').length} de alta prioridad.`
+      : 'Análisis en espera de worker real.',
+    toolPills: isReview && result.review ? [
+      { icon: '📄', label: 'read_context', text: `Inspeccioné ${result.review.inspectedFiles?.length || 0} archivos del proyecto` },
+      { icon: '📑', label: 'inspect_files', text: 'Revisé package.json, README.md, AGENTS.md y archivos clave' },
+      { icon: '🌿', label: 'git_status', text: `Rama: ${result.review.git?.branch || 'N/A'}` },
+      { icon: '🧪', label: 'run_tests', text: `Pruebas: ${result.review.tests?.status || 'N/A'}` }
+    ] : [
+      { icon: '📝', label: 'chat', text: `Procesando: "${text.slice(0, 50)}..."` }
+    ],
+    review: result.review || null,
+    worktreeBranch: 'main',
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.runs.unshift(run);
+  return run;
+}
+
 function chatAnswer(text, project) {
   const request = String(text || '').trim();
   const normalized = request.toLowerCase();
@@ -275,10 +316,101 @@ async function api(req, res, url) {
     state.worker.lastHeartbeat = now();
     return json(res, 200, { ...state, repo: repoSnapshot(ROOT) });
   }
+
+  // GET /api/projects — list all projects
+  if (req.method === 'GET' && url.pathname === '/api/projects') {
+    ensureConversationState();
+    return json(res, 200, { ok: true, projects: state.projects });
+  }
+
+  // GET /api/conversations — list conversations, optionally filtered by projectId
   if (req.method === 'GET' && url.pathname === '/api/conversations') {
     ensureConversationState();
-    return json(res, 200, { conversations: state.conversations, messages: state.messages });
+    const projectId = url.searchParams.get('projectId');
+    const conversations = projectId
+      ? state.conversations.filter(c => c.projectId === projectId)
+      : state.conversations;
+    return json(res, 200, { ok: true, conversations });
   }
+
+  // GET /api/conversations/:id — get conversation details with messages and runs
+  const convDetailMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
+  if (req.method === 'GET' && convDetailMatch) {
+    ensureConversationState();
+    const convId = convDetailMatch[1];
+    const conversation = state.conversations.find(c => c.id === convId);
+    if (!conversation) return json(res, 404, { ok: false, error: 'Conversación no encontrada' });
+    const messages = state.messages.filter(m => m.conversationId === convId);
+    const runs = state.runs.filter(r => r.conversationId === convId);
+    return json(res, 200, { ok: true, conversation, messages, runs });
+  }
+
+  // POST /api/conversations — create a new conversation
+  if (req.method === 'POST' && url.pathname === '/api/conversations') {
+    ensureConversationState();
+    const body = await parseBody(req);
+    const projectId = body.projectId || state.projects[0]?.id;
+    const conversation = {
+      id: id('conv'), projectId,
+      title: body.title || 'Nueva conversación',
+      createdAt: now(), updatedAt: now()
+    };
+    state.conversations.unshift(conversation);
+    event('agent', `Nueva conversación: ${conversation.title}`);
+    persist();
+    return json(res, 201, { ok: true, conversation });
+  }
+
+  // POST /api/conversations/:id/messages — send a message and get response + run
+  const convMsgMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
+  if (req.method === 'POST' && convMsgMatch) {
+    ensureConversationState();
+    const convId = convMsgMatch[1];
+    let conversation = state.conversations.find(c => c.id === convId);
+    if (!conversation) {
+      conversation = { id: convId, projectId: state.projects[0]?.id, title: 'Nueva conversación', createdAt: now(), updatedAt: now() };
+      state.conversations.unshift(conversation);
+    }
+    const body = await parseBody(req);
+    const text = String(body.content || '').trim();
+    if (!text) return json(res, 400, { ok: false, error: 'El mensaje no puede estar vacío' });
+    const project = state.projects.find(p => p.id === conversation.projectId) || state.projects[0];
+    const userMessage = { id: id('msg'), conversationId: conversation.id, role: 'user', content: text, createdAt: now() };
+    const result = chatAnswer(text, project);
+    const assistantMessage = { id: id('msg'), conversationId: conversation.id, role: 'assistant', content: result.text, kind: result.type, review: result.review || null, createdAt: now() };
+    state.messages.push(userMessage, assistantMessage);
+    const run = createRunForMessage(conversation.id, assistantMessage.id, text, result);
+    conversation.updatedAt = now();
+    conversation.title = conversation.title === 'Nueva conversación' ? text.slice(0, 60) : conversation.title;
+    event(result.type === 'review' ? 'success' : result.type === 'blocked' ? 'error' : 'agent', result.type === 'review' ? 'Revisión conversacional completada' : `Chat: ${text.slice(0, 80)}`);
+    persist();
+    return json(res, 201, { ok: true, userMessage, assistantMessage, run, conversation });
+  }
+
+  // GET /api/conversations (legacy, no filter) — kept for backward compat
+  if (req.method === 'GET' && url.pathname === '/api/conversations' && !url.searchParams.has('projectId')) {
+    ensureConversationState();
+    return json(res, 200, { ok: true, conversations: state.conversations, messages: state.messages });
+  }
+
+  // GET /api/user
+  if (req.method === 'GET' && url.pathname === '/api/user') {
+    if (!state.user) {
+      state.user = {
+        id: 'usr_andres_sanabria',
+        name: 'Andres Sanabria',
+        githubHandle: 'AndrewSanabria',
+        antigravityId: 'AGY-MAC-PRO-4173',
+        status: 'connected',
+        connectedSince: now(),
+        role: 'Software Architect & Antigravity User'
+      };
+      persist();
+    }
+    return json(res, 200, { ok: true, user: state.user });
+  }
+
+  // POST /api/chat — legacy chat endpoint
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     const body = await parseBody(req);
     const text = String(body.message || '').trim();
@@ -289,11 +421,12 @@ async function api(req, res, url) {
     const result = chatAnswer(text, project);
     const assistantMessage = { id: id('msg'), conversationId: conversation.id, role: 'assistant', content: result.text, kind: result.type, review: result.review || null, createdAt: now() };
     state.messages.push(userMessage, assistantMessage);
+    const run = createRunForMessage(conversation.id, assistantMessage.id, text, result);
     conversation.updatedAt = now();
     conversation.title = conversation.title === 'Nueva conversación' ? text.slice(0, 60) : conversation.title;
     event(result.type === 'review' ? 'success' : result.type === 'blocked' ? 'error' : 'agent', result.type === 'review' ? 'Revisión conversacional completada' : `Chat: ${text.slice(0, 80)}`);
     persist();
-    return json(res, 201, { conversation, userMessage, assistantMessage });
+    return json(res, 201, { conversation, userMessage, assistantMessage, run });
   }
   if (req.method === 'POST' && url.pathname === '/api/projects') {
     const body = await parseBody(req);
@@ -313,6 +446,68 @@ async function api(req, res, url) {
     if (!task) return json(res, 404, { error: 'Tarea no encontrada' });
     runTask(task); return json(res, 200, task);
   }
+
+  // GET /api/runs/:id/events — SSE stream for run events
+  const runEventsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/events$/);
+  if (req.method === 'GET' && runEventsMatch) {
+    const runId = runEventsMatch[1];
+    const run = state.runs.find(r => r.id === runId);
+    if (!run) return json(res, 404, { error: 'Run no encontrado' });
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive'
+    });
+
+    // Send current state immediately
+    res.write(`data: ${JSON.stringify({ type: 'state', run })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done', runId })}\n\n`);
+    res.end();
+    return;
+  }
+
+  // POST /api/runs/:id/approve
+  const runActionMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/(approve|reject|cancel|retry)$/);
+  if (req.method === 'POST' && runActionMatch) {
+    const runId = runActionMatch[1];
+    const action = runActionMatch[2];
+    const run = state.runs.find(r => r.id === runId);
+    if (!run) return json(res, 404, { ok: false, error: 'Run no encontrado' });
+
+    if (action === 'approve') {
+      run.status = 'approved';
+      run.updatedAt = now();
+      event('success', `Run aprobado: ${runId}`);
+    } else if (action === 'reject') {
+      run.status = 'rejected';
+      run.updatedAt = now();
+      event('error', `Run rechazado: ${runId}`);
+    } else if (action === 'cancel') {
+      run.status = 'cancelled';
+      run.updatedAt = now();
+      event('error', `Run cancelado: ${runId}`);
+    } else if (action === 'retry') {
+      run.status = 'running';
+      run.progress = 0;
+      run.updatedAt = now();
+      event('agent', `Reintentando run: ${runId}`);
+      // Find associated task and re-run if it's a review
+      const associatedMsg = state.messages.find(m => m.id === run.messageId);
+      if (associatedMsg) {
+        const project = state.projects.find(p => p.id === run.conversationId);
+        const result = chatAnswer(associatedMsg.content, project);
+        run.archReasoning = result.text;
+        run.status = result.type === 'review' ? 'completed' : 'completed';
+        run.progress = 100;
+        run.review = result.review || null;
+        run.updatedAt = now();
+      }
+    }
+    persist();
+    return json(res, 200, { ok: true, run });
+  }
+
   return json(res, 404, { error: 'Ruta no encontrada' });
 }
 
