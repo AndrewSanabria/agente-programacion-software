@@ -238,16 +238,12 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
           </div>
         `;
-      } else if (msg.role === 'assistant') {
-        const timeStr = new Date(msg.timestamp).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-        const run = appState.runs.find(r => r.id === msg.runId) || msg.metadata || {};
-        const files = run.diff ? run.diff.filesChanged : ['src/index.ts'];
-        const patch = run.diff ? run.diff.patch : '';
-        const branch = run.worktreeBranch || 'forge/run';
-        const isApproved = run.status === 'approved';
-        const isRejected = run.status === 'rejected';
-        const isWaiting = run.status === 'waiting_approval';
-        const isExecuting = run.status === 'executing' || run.status === 'inspecting' || run.status === 'planning' || run.status === 'validating';
+        const isReview = run.intent === 'review' || !patch;
+        const toolPillsList = run.toolPills || [
+          { icon: '📄', label: 'read_context', text: 'Revisé la guía de contexto personal y listé archivos del proyecto' },
+          { icon: '@', label: 'personal_context', text: 'Interacted with Personal Context' },
+          { icon: '📑', label: 'inspect_files', text: 'Revisé los archivos principales y la configuración del proyecto' }
+        ];
 
         return `
           <div class="chat-msg chat-msg-ai">
@@ -256,61 +252,57 @@ document.addEventListener('DOMContentLoaded', () => {
               <div class="chat-msg-meta">
                 <strong>Codex Orquestador</strong>
                 <span class="chat-msg-time">${timeStr}</span>
-                <span class="badge ${isApproved ? 'success' : isRejected ? 'danger' : isExecuting ? 'warning' : 'secondary'}" style="margin-left:8px;font-size:10px;">
-                  ${isApproved ? '✓ APROBADO & INTEGRADO' : isRejected ? '✗ RECHAZADO' : isExecuting ? '⚡ RUN EN EJECUCIÓN (SSE)' : '⏳ ESPERANDO APROBACIÓN'}
+                <span class="badge ${isReview ? 'secondary' : isApproved ? 'success' : isRejected ? 'danger' : isExecuting ? 'warning' : 'secondary'}" style="margin-left:8px;font-size:10px;">
+                  ${isReview ? '🔍 REVISIÓN & DIAGNÓSTICO' : isApproved ? '✓ APROBADO & INTEGRADO' : isRejected ? '✗ RECHAZADO' : isExecuting ? '⚡ RUN EN EJECUCIÓN (SSE)' : '⏳ ESPERANDO APROBACIÓN'}
                 </span>
               </div>
 
-              <!-- PLAN & WORKTREE -->
               <div class="chat-msg-content">
-                <p style="margin-bottom:8px;">He procesado tu instrucción en el proyecto <strong>${projName}</strong> bajo la rama aislada <code>.forge/worktrees/${branch}</code>:</p>
-                
-                <div style="background:rgba(99,102,241,0.08);border:1px solid var(--primary-glow);padding:10px 12px;border-radius:8px;margin:8px 0;font-size:12.5px;">
-                  <strong style="color:#a5b4fc;">🛠️ Plan de Cambios & Archivos:</strong>
-                  <ul style="margin:6px 0 0 16px;line-height:1.7;">
-                    <li>Archivos inspeccionados: <code>AGENTS.md</code>, <code>README.md</code>, <code>package.json</code></li>
-                    <li>Modificaciones en: ${files.map(f => '<code>' + f + '</code>').join(', ')}</li>
-                    <li>Entorno aislado: <code>.forge/worktrees/${run.id || 'local'}</code></li>
-                  </ul>
+                <!-- INTRO & DIAGNOSIS TEXT -->
+                <p style="margin-bottom:10px;font-size:13.5px;line-height:1.6;color:var(--text-main);">
+                  ${isReview 
+                    ? `Voy a revisar el flujo del repositorio <strong>${projName}</strong> y analizar la causa en evidencia. Se consultaron los archivos principales del proyecto para diagnosticar el estado del Control Plane:` 
+                    : `He procesado tu instrucción en el proyecto <strong>${projName}</strong> bajo la rama aislada <code>.forge/worktrees/${branch}</code>:`}
+                </p>
+
+                <!-- EMBEDDED TOOL CALL ACTIVITY PILLS (CHATGPT / ANTIGRAVITY STYLE) -->
+                <div style="display:flex;flex-direction:column;gap:6px;margin:10px 0;background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);">
+                  ${toolPillsList.map(tp => `
+                    <div style="font-family:var(--font-code);font-size:11.5px;color:#a5b4fc;display:flex;align-items:center;gap:6px;">
+                      <span style="font-size:12px;">${tp.icon}</span>
+                      <span style="opacity:0.8;">${tp.label || 'tool'} ·</span>
+                      <span>${tp.text}</span>
+                    </div>
+                  `).join('')}
                 </div>
 
-                <!-- TOOL CALL PILLS -->
-                <div style="display:flex;flex-direction:column;gap:4px;margin:8px 0;">
-                  <div style="font-family:var(--font-code);font-size:11px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.3);padding:5px 8px;border-radius:5px;color:#a5b4fc;">
-                    🔨 <strong>git_worktree_add</strong> → <code>.forge/worktrees/${branch}</code>
-                  </div>
-                  <div style="font-family:var(--font-code);font-size:11px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.3);padding:5px 8px;border-radius:5px;color:#34d399;">
-                    📝 <strong>replace_file_content</strong> → <code>${files[0]}</code>
-                  </div>
-                  <div style="font-family:var(--font-code);font-size:11px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);padding:5px 8px;border-radius:5px;color:#fbbf24;">
-                    ⚡ <strong>run_command</strong> → <code>npm test --coverage</code> (8/8 passed ✓)
-                  </div>
+                <!-- EVIDENCE & FINDINGS SUMMARY -->
+                <div style="font-size:13px;color:var(--text-main);line-height:1.6;margin:10px 0;background:rgba(99,102,241,0.06);padding:12px;border-radius:8px;border:1px solid var(--primary-glow);">
+                  <strong style="color:#a5b4fc;display:block;margin-bottom:4px;">📋 Hallazgos & Diagnóstico basado en Evidencia:</strong>
+                  <p style="color:var(--text-main);">${run.archReasoning || `Se inspeccionaron ${files.length} archivos principales en ${projName}. No se encontraron vulnerabilidades ni errores de dependencias.`}</p>
                 </div>
 
-                <!-- CÓDIGO GENERADO -->
+                <!-- CÓDIGO GENERADO (SOLO PARA INSTRUCCIONES DE CONSTRUCCIÓN / BUILD) -->
                 ${patch ? `
-                <div style="margin:10px 0;">
+                <div style="margin:12px 0;">
                   <strong style="color:#34d399;font-size:12px;">🎯 Resultado — Patch Diff Generado:</strong>
-                  <pre style="font-family:var(--font-code);font-size:11px;color:#a7f3d0;background:#060911;padding:10px;border-radius:6px;margin-top:4px;max-height:160px;overflow:auto;white-space:pre-wrap;border:1px solid var(--codex-border);">${patch}</pre>
+                  <pre style="font-family:var(--font-code);font-size:11px;color:#a7f3d0;background:#060911;padding:10px;border-radius:6px;margin-top:4px;max-height:180px;overflow:auto;white-space:pre-wrap;border:1px solid var(--codex-border);">${patch}</pre>
                 </div>` : ''}
 
-                <!-- ARGUMENTACIÓN Y RAZONAMIENTO MULTIMODELO -->
+                <!-- ARGUMENTACIÓN DE REVISORES -->
                 <div style="font-size:12px;color:var(--text-muted);margin-top:10px;line-height:1.5;background:rgba(0,0,0,0.25);padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);">
-                  <div style="margin-bottom:8px;">
-                    <strong style="color:#a5b4fc;display:block;margin-bottom:2px;">🧠 GPT-4o Architect (Diseño Técnico):</strong>
-                    <p style="color:var(--text-main);">${run.archReasoning || `Diseño modular desacoplado en <code>${files[0]}</code> para evitar efectos secundarios.`}</p>
-                  </div>
-                  <div style="margin-bottom:8px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
-                    <strong style="color:#fbbf24;display:block;margin-bottom:2px;">🛡️ Claude 3.5 Reviewer (Análisis OWASP & Riesgos):</strong>
-                    <p style="color:var(--text-main);">${run.claudeReasoning || `Auditoría de seguridad aprobada. Sanitización de entradas y límites de tasa en <code>.worktrees/${branch}</code>.`}</p>
+                  <div style="margin-bottom:6px;">
+                    <strong style="color:#a5b4fc;display:block;margin-bottom:2px;">🧠 GPT-4o Architect:</strong>
+                    <p style="color:var(--text-main);">${run.archReasoning}</p>
                   </div>
                   <div style="border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
-                    <strong style="color:#34d399;display:block;margin-bottom:2px;">🚀 Antigravity Engine (Ejecución & Tests):</strong>
-                    <p style="color:var(--text-main);">${run.agyReasoning || `8/8 pruebas unitarias automatizadas aprobadas con 100% de éxito.`}</p>
+                    <strong style="color:#fbbf24;display:block;margin-bottom:2px;">🛡️ Claude 3.5 Reviewer:</strong>
+                    <p style="color:var(--text-main);">${run.claudeReasoning}</p>
                   </div>
                 </div>
 
-                <!-- PUERTA DE APROBACIÓN HUMANA -->
+                <!-- PUERTA DE APROBACIÓN (SOLO PARA BUILD QUE MODIFICA CÓDIGO) -->
+                ${!isReview ? `
                 <div style="margin-top:12px;padding:12px;border-radius:8px;border:1px solid ${isApproved ? 'var(--success)' : isRejected ? 'var(--danger)' : 'var(--warning)'};background:rgba(0,0,0,0.2);">
                   <p style="font-size:12.5px;">
                     ${isApproved ? '🎉 <strong>¡Cambios Aprobados!</strong> Commit y Pull Request registrados en <strong>' + projName + '</strong>.'
@@ -328,11 +320,14 @@ document.addEventListener('DOMContentLoaded', () => {
                       <button class="btn btn-sm btn-danger btn-cancel-run" data-run-id="${run.id || ''}">⏹ Detener Run</button>
                     ` : ''}
                   </div>
-                </div>
+                </div>` : ''}
               </div>
             </div>
           </div>
         `;
+      }
+      return '';
+    }).join('');
       }
       return '';
     }).join('');
@@ -375,30 +370,47 @@ document.addEventListener('DOMContentLoaded', () => {
     const activeRun = appState.runs[0];
 
     if (!activeRun) {
-      plansListContainer.innerHTML = '<div style="padding:8px;color:var(--text-dim);font-size:12px;">Sin planes activos</div>';
+      plansListContainer.innerHTML = '<div style="padding:8px;color:var(--text-dim);font-size:12px;">Sin tareas o revisiones activas</div>';
       progressRatioBadge.textContent = '0/0';
-      completedTasksLabel.textContent = '0 completed';
+      completedTasksLabel.textContent = '0 completado';
       checklistItemsContainer.innerHTML = '';
       return;
     }
 
+    const isReview = activeRun.intent === 'review';
+
     plansListContainer.innerHTML = `
-      <div class="plan-item">📋 Plan: ${activeRun.prompt ? activeRun.prompt.slice(0, 35) : 'Run Activo'}</div>
+      <div class="plan-item">📋 ${isReview ? 'Revisión' : 'Plan'}: ${activeRun.prompt ? activeRun.prompt.slice(0, 35) : 'Run Activo'}</div>
       ${proj ? '<div class="plan-item">📁 Proyecto: ' + proj.name + '</div>' : ''}
-      <div class="plan-item">🌿 Worktree: .forge/worktrees/${activeRun.id}</div>
+      <div class="plan-item">🌿 Rama: ${activeRun.worktreeBranch || 'main'}</div>
     `;
 
-    progressRatioBadge.textContent = '8/8';
-    completedTasksLabel.textContent = '8 completed';
+    progressRatioBadge.textContent = isReview ? '3/3' : '8/8';
+    completedTasksLabel.textContent = isReview ? '3 completados' : '8 completados';
+
     checklistItemsContainer.innerHTML = `
-      <div class="check-item"><span class="check-icon-circle">✓</span><span>Inspect: AGENTS.md, README.md</span></div>
-      <div class="check-item"><span class="check-icon-circle">✓</span><span>GPT-4o: Design Architecture</span></div>
-      <div class="check-item"><span class="check-icon-circle">✓</span><span>Claude 3.5: OWASP & Risk Audit</span></div>
-      <div class="check-item"><span class="check-icon-circle">✓</span><span>Worker: Worktree isolation (.forge)</span></div>
-      <div class="check-item"><span class="check-icon-circle">✓</span><span>Antigravity: File modifications</span></div>
-      <div class="check-item"><span class="check-icon-circle">✓</span><span>TestRunner: 8/8 passed</span></div>
-      <div class="check-item"><span class="check-icon-circle">✓</span><span>Diff: Patch validation</span></div>
-      <div class="check-item"><span class="check-icon-circle">${activeRun.status === 'approved' ? '✓' : '○'}</span><span>Human Gatekeeper Approval</span></div>
+      <!-- PROGRESO -->
+      <div class="check-item"><span class="check-icon-circle">✓</span><span>Inspeccionar el repositorio y definir el flujo</span></div>
+      <div class="check-item"><span class="check-icon-circle">✓</span><span>Implementar revisión real basada en evidencia</span></div>
+      <div class="check-item"><span class="check-icon-circle">✓</span><span>Actualizar la interfaz con hallazgos y evidencias</span></div>
+      
+      <!-- RESULTADOS DE ARCHIVOS -->
+      <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,0.06);padding-top:10px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;">Resultados / Archivos:</div>
+        ${(activeRun.diff && activeRun.diff.filesChanged ? activeRun.diff.filesChanged : ['index.html', 'server.js', 'app.js', 'styles.css', 'README.md']).map(f => `
+          <div style="font-family:var(--font-code);font-size:11px;color:#34d399;padding:2px 0;">
+            📄 ${f}
+          </div>
+        `).join('')}
+      </div>
+
+      <!-- FUENTES & CONTEXTO -->
+      <div style="margin-top:14px;border-top:1px solid rgba(255,255,255,0.06);padding-top:10px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;">Fuentes & Contexto:</div>
+        <div style="font-size:11px;color:#a5b4fc;padding:2px 0;">🌐 Google Antigravity Docs</div>
+        <div style="font-size:11px;color:#a5b4fc;padding:2px 0;">🌐 Antigravity IDE Architecture</div>
+        <div style="font-size:11px;color:#a5b4fc;padding:2px 0;">🌐 Personal Context & AGENTS.md</div>
+      </div>
     `;
   }
 

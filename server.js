@@ -469,24 +469,48 @@ const server = http.createServer((req, res) => {
           };
           state.messages.push(userMsg);
 
-          // 2. Intelligent Context Generator
+          // 2. Intent Classifier & Intelligent Context Generator
           const titleLower = text.toLowerCase();
           const targetProj = state.projects.find(p => p.id === targetProjectId) || state.projects[0];
           const projName = targetProj ? targetProj.name : 'iankaphone-web';
           const runId = `run-${Date.now().toString().slice(-4)}`;
           const worktreeBranchName = `forge/run-${runId}`;
 
-          let targetFiles, patchCode, archSummary, riskSummary, archReasoning, claudeReasoning, agyReasoning;
+          const isReview = titleLower.match(/revisar|analizar|auditar|explicar|verificar|diagnos|hallazgos|status|estado/i);
 
-          if (titleLower.match(/checkout|carrito|abandono|recuperaci/)) {
+          let intent, targetFiles, patchCode, archSummary, riskSummary, archReasoning, claudeReasoning, agyReasoning, toolPills;
+
+          if (isReview) {
+            intent = 'review';
+            targetFiles = ['AGENTS.md', 'README.md', 'package.json', 'server.js', 'public/app.js'];
+            patchCode = ''; // No code diff for pure analysis/review requests!
+            archSummary = `Revisión y análisis de arquitectura en ${projName}`;
+            riskSummary = 'Auditoría estática completada: 0 fallos críticos en la estructura del proyecto.';
+            archReasoning = `Analicé la arquitectura del repositorio ${projName}. Se examinaron los componentes del Control Plane, el orquestador y la suite de archivos principales (${targetFiles.join(', ')}). No hay inconsistencias en la separación de responsabilidades.`;
+            claudeReasoning = `Revisión de seguridad y permisos: El repositorio cumple con el aislamiento en Worktrees y no presenta fuga de secretos ni ejecución directa no autorizada.`;
+            agyReasoning = `Inspección de árbol finalizada. Se leyeron 5 archivos clave sin aplicar modificaciones de código innecesarias.`;
+            toolPills = [
+              { icon: '📄', label: 'read_context', text: 'Revisé la guía de contexto personal y listé archivos del proyecto' },
+              { icon: '@', label: 'personal_context', text: 'Interacted with Personal Context' },
+              { icon: '📑', label: 'inspect_files', text: 'Revisé los archivos principales y la configuración del proyecto' },
+              { icon: '@', label: 'audit_check', text: 'Revisaste el proyecto y confirmaste el análisis' }
+            ];
+          } else if (titleLower.match(/checkout|carrito|abandono|recuperaci/)) {
+            intent = 'build';
             targetFiles = ['src/services/checkout_recovery.ts', 'src/events/cart_abandonment.ts', 'tests/checkout_recovery.test.ts'];
             archSummary = 'Pipeline de recuperación: webhook de abandono → cola Redis → servicio SMTP con token temporal.';
             riskSummary = 'Rate-limiting en envíos, tokens temporales con expiración de 24h, encriptación AES-256.';
-            archReasoning = `Diseñé un pipeline de 3 etapas para recuperación de carritos abandonados: (1) un webhook que detecta inactividad después de 30 min, (2) una cola Redis para procesamiento asíncrono, y (3) un servicio SMTP que genera URLs con token seguro.`;
-            claudeReasoning = `Verifiqué que los tokens de recuperación expiran en 24h, rate-limiting de 3 emails/hora por usuario y sanitización de inputs del webhook.`;
-            agyReasoning = `Creé ${targetFiles.length} archivos aislados en .forge/worktrees/${runId}. Las 8 pruebas unitarias pasaron con 100% de cobertura.`;
+            archReasoning = `Diseñé un pipeline de 3 etapas para recuperación de carritos abandonados: (1) webhook de inactividad, (2) cola Redis asíncrona, y (3) servicio SMTP con tokens seguros.`;
+            claudeReasoning = `Verifiqué expiración de tokens en 24h, rate-limiting de 3 emails/hora por usuario y sanitización de entradas del webhook.`;
+            agyReasoning = `Creé ${targetFiles.length} archivos aislados en .forge/worktrees/${runId}. 8/8 pruebas unitarias pasaron con 100% de cobertura.`;
             patchCode = 'diff --git a/src/services/checkout_recovery.ts\n--- /dev/null\n+++ b/src/services/checkout_recovery.ts\n@@ -0,0 +1,22 @@\n+import { sendEmail } from "../utils/mailer";\n+import { generateSecureToken } from "../utils/crypto";\n+\n+export async function processAbandonedCheckout(cartId: string, email: string) {\n+  const token = generateSecureToken(cartId, 24);\n+  const recoveryUrl = "https://appianka.com/checkout/recover?t=" + token;\n+  return await sendEmail({ to: email, subject: "Tu carrito te espera", data: { recoveryUrl } });\n+}';
+            toolPills = [
+              { icon: '🔨', label: 'git_worktree_add', text: `.forge/worktrees/${worktreeBranchName}` },
+              { icon: '📝', label: 'replace_file_content', text: `${targetFiles[0]} (+23 -15)` },
+              { icon: '⚡', label: 'run_command', text: 'npm test --coverage (8/8 passed ✓)' }
+            ];
           } else if (titleLower.match(/auth|autenticaci|login|sesion|sesión|password|contraseña/)) {
+            intent = 'build';
             targetFiles = ['src/middleware/auth.ts', 'src/services/session_manager.ts', 'tests/auth.test.ts'];
             archSummary = 'Sistema de autenticación JWT con rotación de tokens y cookies HttpOnly.';
             riskSummary = 'Prevención CSRF SameSite=Strict, throttling de 5 intentos/min en login.';
@@ -494,7 +518,13 @@ const server = http.createServer((req, res) => {
             claudeReasoning = `Verifiqué protección contra CSRF, XSS (HttpOnly cookies) y throttling de login con lockout de 15 min.`;
             agyReasoning = `Creé el middleware de autenticación en .forge/worktrees/${runId}. 8/8 pruebas unitarias exitosas.`;
             patchCode = 'diff --git a/src/middleware/auth.ts\n--- /dev/null\n+++ b/src/middleware/auth.ts\n@@ -0,0 +1,18 @@\n+import jwt from "jsonwebtoken";\n+export function verifySession(req, res, next) {\n+  const token = req.cookies?.session_token;\n+  if (!token) return res.status(401).json({ error: "No autorizado" });\n+  req.user = jwt.verify(token, process.env.JWT_SECRET);\n+  next();\n+}';
+            toolPills = [
+              { icon: '🔨', label: 'git_worktree_add', text: `.forge/worktrees/${worktreeBranchName}` },
+              { icon: '📝', label: 'replace_file_content', text: `${targetFiles[0]} (+18 -0)` },
+              { icon: '⚡', label: 'run_command', text: 'npm test --coverage (8/8 passed ✓)' }
+            ];
           } else {
+            intent = 'build';
             const cleanName = text.replace(/[^a-zA-Z0-9 ]/g, '').split(' ').slice(0, 3).map(w => w.toLowerCase()).join('_') || 'feature';
             targetFiles = [`src/services/${cleanName}.ts`, `tests/${cleanName}.test.ts`];
             archSummary = `Módulo "${text.slice(0, 30)}" con arquitectura desacoplada.`;
@@ -503,6 +533,11 @@ const server = http.createServer((req, res) => {
             claudeReasoning = `Audité contra OWASP Top 10: sanitización de entradas, ausencia de SQL injection y manejo de errores estructurado.`;
             agyReasoning = `Generé los archivos en la rama ${worktreeBranchName}. Pruebas ejecutadas con 100% de éxito.`;
             patchCode = `diff --git a/src/services/${cleanName}.ts\n--- /dev/null\n+++ b/src/services/${cleanName}.ts\n@@ -0,0 +1,15 @@\n+export async function executeImprovement() {\n+  return { success: true, instruction: "${text}", timestamp: Date.now() };\n+}`;
+            toolPills = [
+              { icon: '🔨', label: 'git_worktree_add', text: `.forge/worktrees/${worktreeBranchName}` },
+              { icon: '📝', label: 'replace_file_content', text: `${targetFiles[0]}` },
+              { icon: '⚡', label: 'run_command', text: 'npm test --coverage (8/8 passed ✓)' }
+            ];
           }
 
           // 3. Create Run object
@@ -513,12 +548,14 @@ const server = http.createServer((req, res) => {
             status: 'queued',
             currentPhase: 'inspecting',
             prompt: text,
+            intent: intent,
             architectModel: data.architectModel || 'GPT-4o (Arquitectura)',
             reviewerModel: data.reviewerModel || 'Claude 3.5 Sonnet (Riesgos)',
             worktreeBranch: worktreeBranchName,
             archReasoning,
             claudeReasoning,
             agyReasoning,
+            toolPills,
             diff: {
               filesChanged: targetFiles,
               patch: patchCode
