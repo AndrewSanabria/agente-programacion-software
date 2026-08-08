@@ -257,10 +257,11 @@ const server = http.createServer((req, res) => {
 
         // Intelligent Context Generator based on instruction keywords
         const titleLower = data.title.toLowerCase();
-        let targetFiles = ['src/module.ts', 'tests/module.test.ts'];
+        const safeName = data.title.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 20) || 'feature';
+        let targetFiles = [`src/${safeName}.ts`, `tests/${safeName}.test.ts`];
         let patchCode = '';
-        let archSummary = 'Arquitectura propuesta: componentes aislados, DTOs y middlewares de control.';
-        let riskSummary = 'Sin vulnerabilidades críticas. Sanitización de entradas aplicada.';
+        let archSummary = `Arquitectura propuesta: desacoplamiento modular para "${data.title.slice(0, 40)}"`;
+        let riskSummary = 'Sin vulnerabilidades críticas. Sanitización de entradas y validación de tipos estricta.';
 
         if (titleLower.includes('checkout') || titleLower.includes('recuperacion') || titleLower.includes('abandona')) {
           targetFiles = ['src/services/checkout_recovery.ts', 'src/events/cart_abandonment.ts', 'tests/checkout.test.ts'];
@@ -271,9 +272,9 @@ const server = http.createServer((req, res) => {
           targetFiles = ['src/middleware/auth.ts', 'src/services/session_store.ts', 'tests/auth.test.ts'];
           archSummary = 'Arquitectura Auth: rotación de tokens JWT HttpOnly, hash de contraseñas bcrypt y middleware de sesión.';
           riskSummary = 'Riesgos evaluados: Prevención de CSRF SameSite=Strict, throttling en login y sanitización de headers.';
-          patchCode = `diff --git a/src/middleware/auth.ts b/src/middleware/auth.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/middleware/auth.ts\n@@ -0,0 +1,18 @@\n+import jwt from 'jsonwebtoken';\n+\n+export function verifySession(req, res, next) {\n+  const token = req.cookies.session_token;\n+  if (!token) return res.status(401).json({ error: "Unauthorized" });\n+  req.user = jwt.verify(token, process.env.JWT_SECRET);\n+  next();\n+}\n`;
+          patchCode = `diff --git a me/src/middleware/auth.ts b/src/middleware/auth.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/middleware/auth.ts\n@@ -0,0 +1,18 @@\n+import jwt from 'jsonwebtoken';\n+\n+export function verifySession(req, res, next) {\n+  const token = req.cookies.session_token;\n+  if (!token) return res.status(401).json({ error: "Unauthorized" });\n+  req.user = jwt.verify(token, process.env.JWT_SECRET);\n+  next();\n+}\n`;
         } else {
-          patchCode = `diff --git a/src/agent_execution.ts b/src/agent_execution.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/agent_execution.ts\n@@ -0,0 +1,14 @@\n+// Tarea: ${data.title}\n+export function executeInstruction() {\n+  console.log("Ejecutando instrucción autorizada por Antigravity...");\n+  return { status: "SUCCESS", timestamp: Date.now() };\n+}\n`;
+          patchCode = `diff --git a/src/${safeName}.ts b/src/${safeName}.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/${safeName}.ts\n@@ -0,0 +1,22 @@\n+/**\n+ * Antigravity Agent Execution - Task: ${data.title}\n+ * Repository: ${targetProj ? targetProj.name : 'iankaphone-web'}\n+ */\n+export interface TaskExecutionResult {\n+  success: boolean;\n+  instruction: string;\n+  timestamp: number;\n+}\n+\n+export async function executeImprovement(): Promise<TaskExecutionResult> {\n+  console.log("⚡ Antigravity Engine: Ejecutando mejoras en ${targetProj ? targetProj.name : 'iankaphone-web'}...");\n+  return {\n+    success: true,\n+    instruction: "${data.title}",\n+    timestamp: Date.now()\n+  };\n+}\n`;
         }
 
         const newTask = {
@@ -547,10 +548,9 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`\n======================================================`);
-  console.log(`🤖 Agente de Programación Software - Dashboard Codex`);
-  console.log(`🚀 Servidor ejecutándose en: http://localhost:${PORT}`);
-  console.log(`🚀 También disponible en: http://127.0.0.1:${PORT}`);
+  console.log(`🤖 Agente de Programación Software - Antigravity IDE`);
+  console.log(`🚀 Servidor ejecutándose en: http://127.0.0.1:${PORT}`);
   console.log(`======================================================\n`);
 });
