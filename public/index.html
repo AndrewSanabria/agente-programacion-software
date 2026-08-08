@@ -65,7 +65,7 @@
         </div>
       </div>
 
-      <!-- Projects Section -->
+      <!-- Projects & Conversations Section -->
       <div class="sidebar-section">
         <div class="section-title">Projects</div>
         <div id="projects-list-sidebar" class="projects-tree">
@@ -73,10 +73,13 @@
         </div>
       </div>
 
-      <!-- Tasks History Section -->
+      <!-- Conversations Section -->
       <div class="sidebar-section flex-fill">
-        <div class="section-title">Tasks</div>
-        <div id="tasks-list-sidebar" class="tasks-tree">
+        <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Conversations</span>
+          <button class="icon-btn-sm" id="btn-new-conversation" title="Nueva Conversación" style="font-size:12px;">+ New</button>
+        </div>
+        <div id="conversations-list-sidebar" class="tasks-tree">
           <!-- Rendered dynamically -->
         </div>
       </div>
