@@ -28,6 +28,13 @@
   ],
   "conversations": [
     {
+      "id": "conv_c0cab360",
+      "projectId": "proj_demo",
+      "title": "HOLA",
+      "createdAt": "2026-08-08T04:49:52.636Z",
+      "updatedAt": "2026-08-08T04:50:15.238Z"
+    },
+    {
       "id": "conv_main",
       "projectId": "proj_demo",
       "title": "Conversación principal",
@@ -284,9 +291,83 @@
         "completedAt": "2026-08-08T04:46:57.451Z"
       },
       "createdAt": "2026-08-08T04:46:57.451Z"
+    },
+    {
+      "id": "msg_2e0f9399",
+      "conversationId": "conv_c0cab360",
+      "role": "user",
+      "content": "HOLA",
+      "createdAt": "2026-08-08T04:49:52.639Z"
+    },
+    {
+      "id": "msg_d9bc7326",
+      "conversationId": "conv_c0cab360",
+      "role": "assistant",
+      "content": "Entiendo tu solicitud: “HOLA”. Para darte una respuesta basada en el proyecto, pide una revisión, por ejemplo: “Revisa el sistema y dime qué problemas tiene”.",
+      "kind": "answer",
+      "review": null,
+      "createdAt": "2026-08-08T04:49:52.640Z"
+    },
+    {
+      "id": "msg_1cd39673",
+      "conversationId": "conv_c0cab360",
+      "role": "user",
+      "content": "PUEDEN CONECTARTE A UN REPO EN MI GIT HUB?",
+      "createdAt": "2026-08-08T04:50:15.238Z"
+    },
+    {
+      "id": "msg_ff82d805",
+      "conversationId": "conv_c0cab360",
+      "role": "assistant",
+      "content": "Entiendo tu solicitud: “PUEDEN CONECTARTE A UN REPO EN MI GIT HUB?”. Para darte una respuesta basada en el proyecto, pide una revisión, por ejemplo: “Revisa el sistema y dime qué problemas tiene”.",
+      "kind": "answer",
+      "review": null,
+      "createdAt": "2026-08-08T04:50:15.238Z"
     }
   ],
   "runs": [
+    {
+      "id": "run_b4c86bd4",
+      "conversationId": "conv_c0cab360",
+      "messageId": "msg_ff82d805",
+      "intent": "instruction",
+      "status": "completed",
+      "progress": 100,
+      "archReasoning": "Entiendo tu solicitud: “PUEDEN CONECTARTE A UN REPO EN MI GIT HUB?”. Para darte una respuesta basada en el proyecto, pide una revisión, por ejemplo: “Revisa el sistema y dime qué problemas tiene”.",
+      "claudeReasoning": "Análisis en espera de worker real.",
+      "toolPills": [
+        {
+          "icon": "📝",
+          "label": "chat",
+          "text": "Procesando: \"PUEDEN CONECTARTE A UN REPO EN MI GIT HUB?...\""
+        }
+      ],
+      "review": null,
+      "worktreeBranch": "main",
+      "createdAt": "2026-08-08T04:50:15.238Z",
+      "updatedAt": "2026-08-08T04:50:15.238Z"
+    },
+    {
+      "id": "run_e06ad26c",
+      "conversationId": "conv_c0cab360",
+      "messageId": "msg_d9bc7326",
+      "intent": "instruction",
+      "status": "completed",
+      "progress": 100,
+      "archReasoning": "Entiendo tu solicitud: “HOLA”. Para darte una respuesta basada en el proyecto, pide una revisión, por ejemplo: “Revisa el sistema y dime qué problemas tiene”.",
+      "claudeReasoning": "Análisis en espera de worker real.",
+      "toolPills": [
+        {
+          "icon": "📝",
+          "label": "chat",
+          "text": "Procesando: \"HOLA...\""
+        }
+      ],
+      "review": null,
+      "worktreeBranch": "main",
+      "createdAt": "2026-08-08T04:49:52.640Z",
+      "updatedAt": "2026-08-08T04:49:52.640Z"
+    },
     {
       "id": "run_81c7cdee",
       "conversationId": "conv_main",
@@ -618,6 +699,24 @@
     }
   ],
   "events": [
+    {
+      "id": "evt_eff6f6ac",
+      "type": "agent",
+      "message": "Chat: PUEDEN CONECTARTE A UN REPO EN MI GIT HUB?",
+      "createdAt": "2026-08-08T04:50:15.238Z"
+    },
+    {
+      "id": "evt_ad9a7207",
+      "type": "agent",
+      "message": "Chat: HOLA",
+      "createdAt": "2026-08-08T04:49:52.640Z"
+    },
+    {
+      "id": "evt_a2ad2f9f",
+      "type": "agent",
+      "message": "Nueva conversación: HOLA",
+      "createdAt": "2026-08-08T04:49:52.636Z"
+    },
     {
       "id": "evt_1c23030e",
       "type": "success",
