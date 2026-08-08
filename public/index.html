@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Codex IDE - Orquestador Local de Agentes IA</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="codex-theme">
+
+  <div class="codex-app-layout">
+    
+    <!-- LEFT SIDEBAR: Navigation & Tasks Tree -->
+    <aside class="codex-sidebar-left">
+      <!-- Controls Top Header -->
+      <div class="sidebar-top-controls">
+        <button class="icon-btn" title="Atrás">←</button>
+        <button class="icon-btn" title="Adelante">→</button>
+        <button class="icon-btn" title="Descargar">↓</button>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="quick-actions">
+        <button class="action-item" id="btn-new-task">
+          <span class="action-icon">➕</span>
+          <span class="action-label">New task</span>
+          <span class="shortcut">⌘N</span>
+        </button>
+        <button class="action-item" id="btn-search">
+          <span class="action-icon">🔍</span>
+          <span class="action-label">Search</span>
+          <span class="shortcut">⌘K</span>
+        </button>
+        <button class="action-item" id="btn-automations">
+          <span class="action-icon">⚡</span>
+          <span class="action-label">Automations</span>
+        </button>
+        <button class="action-item" id="btn-skills">
+          <span class="action-icon">🛠️</span>
+          <span class="action-label">Skills</span>
+        </button>
+      </div>
+
+      <!-- Projects Group Header -->
+      <div class="section-group-header">
+        <div class="group-toggles">
+          <button class="btn-group-toggle active"># Group</button>
+          <button class="btn-group-toggle">📁 Project</button>
+        </div>
+        <button class="icon-btn-sm" title="Filtrar">⚙️</button>
+        <button class="icon-btn-sm" title="Agregar proyecto">+</button>
+      </div>
+
+      <!-- Pinned Section -->
+      <div class="sidebar-section">
+        <div class="section-title">Pinned</div>
+        <div class="pinned-item" id="btn-connect-github">
+          <span class="pin-icon">📌</span>
+          <span class="pin-label">Conectar a GitHub</span>
+          <span class="time-ago">1d</span>
+        </div>
+      </div>
+
+      <!-- Projects Section -->
+      <div class="sidebar-section">
+        <div class="section-title">Projects</div>
+        <div id="projects-list-sidebar" class="projects-tree">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
+
+      <!-- Tasks History Section -->
+      <div class="sidebar-section flex-fill">
+        <div class="section-title">Tasks</div>
+        <div id="tasks-list-sidebar" class="tasks-tree">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
+
+      <!-- Left Sidebar Footer Profile -->
+      <div class="sidebar-footer-profile">
+        <div class="avatar">A</div>
+        <div class="profile-info">
+          <div class="name">Andres S...</div>
+          <div class="status-sub">Worker Local 🟢</div>
+        </div>
+        <button class="icon-btn-sm" id="btn-device-status" title="Worker Local Status">📱</button>
+        <button class="icon-btn-sm" id="btn-settings" title="Configuración">⚙️</button>
+      </div>
+    </aside>
+
+    <!-- CENTER AREA: Workspace Canvas & Interactive Execution Chat -->
+    <main class="codex-main-canvas">
+      <!-- Main Workspace Header -->
+      <header class="workspace-header">
+        <div class="task-title-group">
+          <h2 id="current-task-title">Continuar proyecto ianka App localmente</h2>
+          <select id="header-project-select" class="tag-folder-select">
+            <!-- Populated dynamically -->
+          </select>
+        </div>
+        <div class="header-actions">
+          <button class="icon-btn" title="Opciones">•••</button>
+        </div>
+      </header>
+
+      <!-- Center Scrollable Content Body -->
+      <div class="workspace-body" id="workspace-scroll-area">
+        
+        <!-- Table of Completed Steps / Actions -->
+        <div class="completed-steps-card">
+          <table class="steps-table">
+            <tbody id="completed-steps-table-body">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Files Changed Banner -->
+        <div class="files-changed-bar" id="files-changed-bar">
+          <div class="files-changed-info">
+            <span class="arrow-toggle">❯</span>
+            <span id="files-changed-count">5 files changed</span>
+            <span class="diff-add-del" id="diff-add-del">+23 -15</span>
+          </div>
+          <button class="btn-undo" id="btn-undo-changes">↶ Undo</button>
+        </div>
+
+        <!-- Diff Details Accordion Panel -->
+        <div class="diff-panel-collapsed hidden" id="diff-panel-content">
+          <pre class="diff-code-block" id="diff-code-text"></pre>
+        </div>
+
+        <!-- User Prompt Message Cards -->
+        <div class="user-prompt-card" id="user-prompt-display">
+          <p id="user-prompt-text">en funcion del objetivo, la ia debe realizar la configuracion acertada en segmentacion alcance maximizacion de resultados de acuerdo a la campaña, por ejemplo venta de iphone, debe segmentar el lugar intereses, comportamientos, y lugar donde e clientes quiere dirigir el objetivo</p>
+        </div>
+
+        <!-- Live Agent Chat Responses & Interactive Action Stream -->
+        <div class="agent-chat-responses-container" id="agent-chat-responses-container">
+          <!-- Rendered dynamically -->
+        </div>
+
+        <!-- Live Execution Stream & Subagent Cards -->
+        <div class="execution-stream-container">
+          <div class="execution-timer-badge">
+            Worked for <span id="execution-time-label">3 m 27 s</span>
+          </div>
+
+          <div class="reasoning-step-box">
+            <span class="brain-icon">🧠</span>
+            <span class="reasoning-text" id="reasoning-status-text">Thought for a few seconds</span>
+          </div>
+
+          <div class="subagents-list" id="subagents-execution-list">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Alert Notification Bar -->
+        <div class="alert-bar" id="alert-status-bar">
+          <div class="alert-content">
+            <span class="alert-icon">⚠️</span>
+            <span class="alert-msg" id="alert-msg-text">Worker local conectado en 127.0.0.1:4173 | Git Worktree Aislado</span>
+          </div>
+          <div class="alert-actions">
+            <button class="btn-alert-sm" id="btn-show-details">Show details</button>
+            <button class="btn-alert-sm" id="btn-copy-logs">Copy</button>
+            <button class="btn-alert-sm" id="btn-report-issue">Report issue</button>
+            <button class="alert-close" id="btn-close-alert">✕</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Bottom Chat & Instruction Input Console -->
+      <footer class="agent-chat-footer">
+        <div class="chat-box-wrapper">
+          <textarea id="chat-input-textarea" rows="2" placeholder="Ask for follow-up changes"></textarea>
+
+          <div class="chat-toolbar">
+            <div class="toolbar-left">
+              <button class="tool-btn" id="btn-attach" title="Adjuntar contexto">+</button>
+
+              <select id="chat-project-select" class="model-select-pill" style="border-color: var(--primary); font-weight: 600;">
+                <!-- Populated dynamically -->
+              </select>
+
+              <div class="dropdown-pill" id="btn-toggle-plan-mode">
+                <span class="pill-icon">📋</span>
+                <span class="pill-text" id="plan-mode-label">Plan mode</span>
+                <span class="pill-arrow">˅</span>
+              </div>
+
+              <div class="context-pill">
+                <span class="pill-icon">📑</span>
+                <span class="pill-count">1</span>
+              </div>
+            </div>
+
+            <div class="toolbar-right">
+              <select id="select-ai-model" class="model-select-pill">
+                <option value="GPT-4o (Arquitectura)">GPT-4o (Arquitectura)</option>
+                <option value="Claude 3.5 Sonnet (Riesgos)">Claude 3.5 Sonnet (Riesgos)</option>
+                <option value="GLM-5-Turbo">GLM-5-Turbo</option>
+              </select>
+
+              <div class="toggle-pill active">
+                <span class="bolt-icon">⚡</span>
+                <span>On</span>
+                <span class="pill-arrow">˅</span>
+              </div>
+
+              <button class="btn-send-arrow" id="btn-send-instruction" title="Enviar instrucción">↑</button>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </main>
+
+    <!-- RIGHT SIDEBAR: Plans, Progress & Terminals Inspector -->
+    <aside class="codex-sidebar-right">
+      
+      <!-- Plans Inspector Section -->
+      <div class="inspector-section">
+        <div class="section-header-row">
+          <h3>Plans</h3>
+          <div class="section-controls">
+            <button class="icon-btn-sm" title="Más opciones">•••</button>
+            <button class="icon-btn-sm" title="Maximizar">⤢</button>
+          </div>
+        </div>
+        <div class="plans-list" id="plans-list-container">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
+
+      <!-- Progress Checklists Section -->
+      <div class="inspector-section flex-fill">
+        <div class="section-header-row">
+          <h3>Progress</h3>
+          <span class="badge-count" id="progress-ratio-badge">8/8</span>
+        </div>
+        <div class="progress-sub-header">
+          <span class="arrow-down">˅</span>
+          <span id="completed-tasks-label">5 completed</span>
+        </div>
+        <div class="checklist-items" id="checklist-items-container">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
+
+      <!-- Terminals Section -->
+      <div class="inspector-section">
+        <div class="section-header-row">
+          <h3>Terminals</h3>
+          <span class="small-info">11h 18m 56s · 1 background</span>
+        </div>
+        <div class="terminal-mini-output" id="mini-terminal-log">
+          $ node server.js [Worker Local Online]
+        </div>
+      </div>
+
+      <!-- Agents Status Section -->
+      <div class="inspector-section">
+        <div class="section-header-row">
+          <h3>Agents</h3>
+        </div>
+        <div class="agents-badges-row">
+          <span class="sub-agent gpt">GPT-4o 🟢</span>
+          <span class="sub-agent claude">Claude 3.5 🟢</span>
+          <span class="sub-agent agy">Antigravity 🟢</span>
+        </div>
+      </div>
+
+    </aside>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

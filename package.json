@@ -1,0 +1,22 @@
+{
+  "name": "agente-programacion-software",
+  "version": "1.0.0",
+  "description": "Dashboard Orquestador de Agentes IA y Worker Local (Tipo Codex)",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "keywords": [
+    "codex",
+    "ai-agents",
+    "gpt",
+    "claude",
+    "antigravity",
+    "orchestrator",
+    "local-worker"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {}
+}
