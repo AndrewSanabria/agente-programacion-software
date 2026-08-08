@@ -212,6 +212,18 @@ document.addEventListener('DOMContentLoaded', () => {
     checklistItemsContainer.innerHTML = '';
   }
 
+  function formatMarkdown(text) {
+    if (!text) return '';
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\n\n/g, '</p><p style="margin-top:8px;">')
+      .replace(/\n/g, '<br>');
+  }
+
   // ===== MAIN CHAT THREAD (CODEX MODEL) =====
   function renderChatThread() {
     if (!chatThread) return;
@@ -301,7 +313,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <!-- FINDINGS & EVIDENCE -->
             <div style="font-size:13px;color:var(--text-main);line-height:1.6;margin:10px 0;background:rgba(99,102,241,0.06);padding:12px;border-radius:8px;border:1px solid var(--primary-glow);">
               <strong style="color:#a5b4fc;display:block;margin-bottom:4px;">📋 Hallazgos & Diagnóstico basado en Evidencia:</strong>
-              <p style="color:var(--text-main);">${msg.content.split('\n').slice(0, 2).join('<br>')}</p>
+              <div style="color:var(--text-main);">${formatMarkdown(msg.content)}</div>
             </div>
 
             ${findingsHtml ? `
@@ -412,6 +424,31 @@ document.addEventListener('DOMContentLoaded', () => {
     chatInputTextarea.value = '';
     const selectedModel = selectAiModel ? selectAiModel.value : 'Antigravity AI (Líder Orquestador)';
     const targetProjectId = appState.activeProjectId || (appState.projects[0] ? appState.projects[0].id : 'proj-1');
+    const nowTime = new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+
+    // Optimistic user message rendering
+    if (chatThread) {
+      const userMsgHtml = `
+        <div class="chat-msg chat-msg-user">
+          <div class="chat-msg-avatar">A</div>
+          <div class="chat-msg-body">
+            <div class="chat-msg-meta"><strong>Tú</strong> <span class="chat-msg-time">${nowTime}</span></div>
+            <div class="chat-msg-content">${text}</div>
+          </div>
+        </div>
+        <div class="chat-msg chat-msg-ai" id="thinking-indicator-card">
+          <div class="chat-msg-avatar" style="background:var(--primary-glow);color:#fff;">✨</div>
+          <div class="chat-msg-body">
+            <div class="chat-msg-meta"><strong style="color:#a5b4fc;">✨ Antigravity AI (Líder Orquestador)</strong></div>
+            <div class="chat-msg-content" style="color:#fbbf24;font-size:13px;padding:8px 0;">
+              <span style="animation:pulse 1.2s infinite;display:inline-block;">🧠 Pensando y coordinando al equipo de agentes (GPT-4o, Claude 3.5, Worker Local)...</span>
+            </div>
+          </div>
+        </div>
+      `;
+      chatThread.insertAdjacentHTML('beforeend', userMsgHtml);
+      scrollToBottom();
+    }
 
     try {
       // 1. Create or ensure Conversation
@@ -439,12 +476,13 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       const data = await res.json();
       if (data.ok) {
-        appState.activeRunId = data.run.id;
-        subscribeToRunEvents(data.run.id);
-        fetchConversationDetails(convId);
+        appState.activeRunId = data.run ? data.run.id : null;
+        if (data.run && data.run.id) subscribeToRunEvents(data.run.id);
+        await fetchConversationDetails(convId);
       }
     } catch (e) {
-      alert('Error enviando instrucción: ' + e.message);
+      console.error('Error enviando instrucción:', e);
+      fetchConversations();
     }
   }
 
