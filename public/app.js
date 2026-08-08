@@ -323,7 +323,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>` : ''}
               </div>
             </div>
-          </div>
+        `;
       }
       return '';
     }).join('');

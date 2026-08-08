@@ -1,771 +1,332 @@
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const { exec } = require('child_process');
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 
-const PORT = process.env.PORT || 4173;
-const STATE_FILE = path.join(__dirname, 'data', 'state.json');
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const ROOT = __dirname;
+const PUBLIC_DIR = path.join(ROOT, 'public');
+const DATA_DIR = path.join(ROOT, 'data');
+const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const PORT = Number(process.env.PORT || 4173);
 
-// SSE Connections Registry
-const sseClients = [];
+const now = () => new Date().toISOString();
+const id = (prefix) => `${prefix}_${crypto.randomBytes(4).toString('hex')}`;
 
-// Helper to ensure data folder and state exist
-function loadState() {
-  try {
-    if (!fs.existsSync(path.dirname(STATE_FILE))) {
-      fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-    }
-    if (fs.existsSync(STATE_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      // Migrations / Defaults
-      if (!parsed.conversations) parsed.conversations = [];
-      if (!parsed.messages) parsed.messages = [];
-      if (!parsed.runs) parsed.runs = [];
-      if (!parsed.runEvents) parsed.runEvents = [];
-      if (!parsed.workers) {
-        parsed.workers = [{
-          id: 'worker-local-1',
-          name: 'Worker Local Mac-Pro',
-          status: 'online',
-          connectedSince: new Date().toISOString(),
-          worktreeRoot: path.join(__dirname, '.forge', 'worktrees'),
-          activeWorktreesCount: 0,
-          sandboxed: true,
-          port: PORT,
-          currentGitRepo: __dirname
-        }];
-      }
-      if (!parsed.projects || parsed.projects.length === 0) {
-        parsed.projects = [
-          {
-            id: 'proj-1',
-            name: 'iankaphone-web',
-            path: '/Users/andressanabria/Desktop/iankaphone web',
-            activeBranch: 'main',
-            status: 'active'
-          },
-          {
-            id: 'proj-2',
-            name: 'agente-programacion-software',
-            path: __dirname,
-            activeBranch: 'main',
-            status: 'active'
-          }
-        ];
-      }
-      return parsed;
-    }
-  } catch (err) {
-    console.error('Error loading state file:', err);
-  }
-
-  // Initial State Schema
-  const defaultProj1Id = 'proj-1';
-  const defaultProj2Id = 'proj-2';
-  const defaultConv1Id = 'conv-101';
-  const defaultConv2Id = 'conv-201';
-
+function seedState() {
   return {
-    worker: {
-      status: 'online',
-      name: 'Worker Local Mac-Pro',
-      connectedSince: new Date().toISOString(),
-      worktreeRoot: path.join(__dirname, '.forge', 'worktrees'),
-      activeWorktreesCount: 0,
-      sandboxed: true,
-      port: PORT,
-      currentGitRepo: __dirname
-    },
-    workers: [
-      {
-        id: 'worker-local-1',
-        name: 'Worker Local Mac-Pro',
-        status: 'online',
-        connectedSince: new Date().toISOString(),
-        worktreeRoot: path.join(__dirname, '.forge', 'worktrees'),
-        activeWorktreesCount: 0,
-        sandboxed: true,
-        port: PORT,
-        currentGitRepo: __dirname
-      }
+    projects: [{
+      id: 'proj_demo',
+      name: 'agente de programacion software',
+      localPath: ROOT,
+      githubUrl: 'https://github.com/AndrewSanabria/agente-programacion-software',
+      branch: 'main',
+      status: 'connected',
+      createdAt: now()
+    }],
+    tasks: [{
+      id: 'task_demo',
+      projectId: 'proj_demo',
+      title: 'Preparar arquitectura del dashboard',
+      description: 'Definir el flujo entre arquitectos, revisor y worker local.',
+      status: 'completed',
+      stage: 'review',
+      priority: 'high',
+      agent: 'GPT Architect',
+      createdAt: now(),
+      updatedAt: now(),
+      progress: 100,
+      result: 'Plan base creado. Listo para conectar proveedores reales.'
+    }],
+    conversations: [{ id: 'conv_main', projectId: 'proj_demo', title: 'Conversación principal', createdAt: now(), updatedAt: now() }],
+    messages: [],
+    events: [
+      { id: id('evt'), type: 'system', message: 'Worker local listo para recibir tareas', createdAt: now() },
+      { id: id('evt'), type: 'success', message: 'Proyecto demo conectado', createdAt: now() }
     ],
-    projects: [
-      {
-        id: defaultProj1Id,
-        name: 'iankaphone-web',
-        path: '/Users/andressanabria/Desktop/iankaphone web',
-        activeBranch: 'main',
-        status: 'active'
-      },
-      {
-        id: defaultProj2Id,
-        name: 'agente-programacion-software',
-        path: __dirname,
-        activeBranch: 'main',
-        status: 'active'
-      }
-    ],
-    conversations: [
-      {
-        id: defaultConv1Id,
-        projectId: defaultProj1Id,
-        title: 'Evolución del Módulo ianka App',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      },
-      {
-        id: defaultConv2Id,
-        projectId: defaultProj2Id,
-        title: 'Revisión y mejoramiento de arquitectura Codex',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }
-    ],
-    messages: [
-      {
-        id: 'msg-1',
-        conversationId: defaultConv1Id,
-        role: 'user',
-        content: 'Continuar proyecto ianka App localmente con módulo de checkout',
-        timestamp: new Date().toISOString()
-      },
-      {
-        id: 'msg-2',
-        conversationId: defaultConv2Id,
-        role: 'user',
-        content: 'Mejorar comportamiento del chat para seguir la arquitectura Codex oficial',
-        timestamp: new Date().toISOString()
-      }
-    ],
-    runs: [],
-    runEvents: [],
-    tasks: [],
-    logs: []
+    worker: { status: 'online', name: 'worker-local', lastHeartbeat: now() }
   };
 }
 
-function saveState(state) {
+function loadState() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(STATE_FILE)) {
+    const initial = seedState();
+    fs.writeFileSync(STATE_FILE, JSON.stringify(initial, null, 2));
+    return initial;
+  }
+  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); }
+  catch { return seedState(); }
+}
+
+let state = loadState();
+function persist() { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); }
+function ensureConversationState() {
+  if (!Array.isArray(state.conversations)) state.conversations = [];
+  if (!Array.isArray(state.messages)) state.messages = [];
+  const firstProject = state.projects?.[0];
+  if (firstProject && (!firstProject.githubUrl || /tu-organizacion/i.test(firstProject.githubUrl))) firstProject.githubUrl = 'https://github.com/AndrewSanabria/agente-programacion-software';
+  if (!state.conversations.length && state.projects[0]) state.conversations.push({ id: id('conv'), projectId: state.projects[0].id, title: 'Conversación principal', createdAt: now(), updatedAt: now() });
+}
+ensureConversationState();
+function event(type, message) {
+  state.events.unshift({ id: id('evt'), type, message, createdAt: now() });
+  state.events = state.events.slice(0, 30);
+}
+
+function json(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; if (raw.length > 1e6) req.destroy(); });
+    req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch (err) { reject(err); } });
+    req.on('error', reject);
+  });
+}
+function repoSnapshot(localPath) {
   try {
-    if (!fs.existsSync(path.dirname(STATE_FILE))) {
-      fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+    const branch = execFileSync('git', ['-C', localPath, 'branch', '--show-current'], { encoding: 'utf8', timeout: 2500 }).trim() || 'detached';
+    const porcelain = execFileSync('git', ['-C', localPath, 'status', '--porcelain'], { encoding: 'utf8', timeout: 2500 }).trim();
+    return { available: true, branch, changedFiles: porcelain ? porcelain.split('\n').length : 0, clean: !porcelain };
+  } catch { return { available: false, branch: null, changedFiles: 0, clean: false }; }
+}
+
+const REVIEW_REQUEST = /\b(revis(ar|ión|ion)|review|auditar|auditor[ií]a|analiz(ar|a)|inspeccion(ar|a)|estado del proyecto)\b/i;
+
+function isReviewRequest(task) {
+  return REVIEW_REQUEST.test(`${task.title || ''} ${task.description || ''}`);
+}
+
+function listRepositoryFiles(root, limit = 180) {
+  const ignored = new Set(['.git', 'node_modules', 'data', '.forge', 'dist', 'build', 'coverage', 'upload']);
+  const files = [];
+  function visit(current, relative = '') {
+    if (files.length >= limit) return;
+    let entries;
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (files.length >= limit || ignored.has(entry.name) || entry.name.startsWith('.')) continue;
+      const absolute = path.join(current, entry.name);
+      const rel = path.join(relative, entry.name);
+      if (entry.isDirectory()) visit(absolute, rel);
+      else if (entry.isFile()) files.push(rel);
     }
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
-  } catch (err) {
-    console.error('Error saving state file:', err);
+  }
+  visit(root);
+  return files;
+}
+
+function readRepositoryFile(root, relative, maxBytes = 120000) {
+  const target = path.resolve(root, relative);
+  const rootWithSeparator = `${path.resolve(root)}${path.sep}`;
+  if (target !== path.resolve(root) && !target.startsWith(rootWithSeparator)) return null;
+  try {
+    const stat = fs.statSync(target);
+    if (!stat.isFile() || stat.size > maxBytes) return null;
+    return fs.readFileSync(target, 'utf8');
+  } catch { return null; }
+}
+
+function runReadOnlyGit(root, args) {
+  try {
+    return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 4000, maxBuffer: 200000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch { return null; }
+}
+
+function runRepositoryTests(root, packageJson) {
+  const testScript = packageJson?.scripts?.test;
+  if (!testScript || /no test|not configured/i.test(testScript)) {
+    return { status: 'not_configured', command: null, output: 'No hay un script de pruebas configurado en package.json.' };
+  }
+  try {
+    const output = execFileSync('npm', ['test'], {
+      cwd: root, encoding: 'utf8', timeout: 30000, maxBuffer: 300000
+    });
+    return { status: 'passed', command: 'npm test', output: output.slice(-5000) };
+  } catch (error) {
+    return { status: 'failed', command: 'npm test', output: `${error.stdout || ''}${error.stderr || ''}`.slice(-5000) };
   }
 }
 
-function addLog(state, level, moduleName, message) {
-  const logEntry = {
-    timestamp: new Date().toISOString(),
-    level,
-    module: moduleName,
-    message
+function reviewRepository(project) {
+  const root = path.resolve(project?.localPath || ROOT);
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    return { ok: false, error: `La ruta configurada no existe o no es una carpeta: ${root}` };
+  }
+
+  const files = listRepositoryFiles(root);
+  const byName = new Map(files.map(file => [path.basename(file).toLowerCase(), file]));
+  const packagePath = byName.get('package.json');
+  const packageText = packagePath ? readRepositoryFile(root, packagePath) : null;
+  let packageJson = null;
+  try { packageJson = packageText ? JSON.parse(packageText) : null; } catch { packageJson = null; }
+  const readme = byName.get('readme.md') ? readRepositoryFile(root, byName.get('readme.md')) : null;
+  const agents = byName.get('agents.md') ? readRepositoryFile(root, byName.get('agents.md')) : null;
+  const serverText = files.filter(file => /(^|\\|\/)server\.(js|ts)$/.test(file)).map(file => readRepositoryFile(root, file) || '').join('\n');
+  const sourceText = files.filter(file => /\.(js|ts|tsx|jsx|py|go|java|rb|php)$/.test(file)).slice(0, 80).map(file => readRepositoryFile(root, file) || '').join('\n');
+  const findings = [];
+
+  if (!packageJson && !files.some(file => /(^|\\|\/)pyproject\.toml$/.test(file))) {
+    findings.push({ severity: 'high', title: 'No se encontró un manifiesto de proyecto reconocible', evidence: 'Falta package.json o pyproject.toml.', recommendation: 'Define el comando de instalación, pruebas y build del proyecto.' });
+  }
+  if (!agents) findings.push({ severity: 'medium', title: 'Falta AGENTS.md', evidence: 'No hay instrucciones operativas para los agentes.', recommendation: 'Añade reglas de arquitectura, comandos permitidos y criterios de aceptación.' });
+  if (!readme) findings.push({ severity: 'medium', title: 'Falta README.md', evidence: 'No hay documentación principal detectable.', recommendation: 'Documenta cómo arrancar, probar y desplegar el proyecto.' });
+  if (packageJson && !packageJson.scripts?.test) findings.push({ severity: 'high', title: 'No hay pruebas automatizadas configuradas', evidence: 'package.json no contiene scripts.test.', recommendation: 'Añade pruebas ejecutables antes de aceptar cambios de agentes.' });
+  if (/Ejecución simulada correcta|mensajes de ejecución simulada/i.test(serverText)) findings.push({ severity: 'critical', title: 'La ejecución de agentes todavía está simulada', evidence: 'El servidor contiene una respuesta que declara una ejecución simulada como correcta.', recommendation: 'Conecta el orquestador a un worker real y no afirmes que se modificó código si solo se avanzó una etapa.' });
+  if (!/\/api\/(chat|conversations|messages)/.test(serverText)) findings.push({ severity: 'high', title: 'No existe una API conversacional', evidence: 'No se detectaron endpoints de chat, conversaciones o mensajes.', recommendation: 'El mensaje del usuario debe crear un run y devolver una respuesta basada en contexto del repositorio.' });
+  if (!/github|git/i.test(`${readme || ''}${sourceText}`)) findings.push({ severity: 'medium', title: 'La integración Git/GitHub no está implementada en el código revisado', evidence: 'Solo se observa lectura limitada del estado Git.', recommendation: 'Implementa un adaptador con permisos mínimos y separa GitHub del worker local.' });
+  if (files.length >= 180) findings.push({ severity: 'info', title: 'La inspección fue limitada', evidence: 'Se alcanzó el límite de 180 archivos para mantener la respuesta manejable.', recommendation: 'Divide la revisión por módulos para auditar el repositorio completo.' });
+
+  const gitBranch = runReadOnlyGit(root, ['branch', '--show-current']) || 'no disponible';
+  const gitStatus = runReadOnlyGit(root, ['status', '--short']);
+  const tests = runRepositoryTests(root, packageJson);
+  if (tests.status === 'failed') findings.push({ severity: 'high', title: 'Las pruebas configuradas fallan', evidence: `${tests.command}: el proceso terminó con error.`, recommendation: 'Revisa la salida de pruebas antes de aprobar cambios.' });
+  if (tests.status === 'not_configured' && packageJson) findings.push({ severity: 'high', title: 'La revisión no pudo validar pruebas', evidence: tests.output, recommendation: 'Configura un script test real; no se debe mostrar “8/8 pasaron” sin ejecutarlo.' });
+
+  const counts = findings.reduce((acc, item) => { acc[item.severity] = (acc[item.severity] || 0) + 1; return acc; }, {});
+  const summary = findings.length
+    ? `Revisión real completada: se inspeccionaron ${files.length} archivos y se encontraron ${findings.length} hallazgos (${counts.critical || 0} críticos, ${counts.high || 0} altos, ${counts.medium || 0} medios). No se modificaron archivos.`
+    : `Revisión real completada: se inspeccionaron ${files.length} archivos y no se detectaron hallazgos en las comprobaciones disponibles. No se modificaron archivos.`;
+  return {
+    ok: true,
+    project: project?.name || path.basename(root),
+    root,
+    inspectedFiles: files.slice(0, 80),
+    inspectedDocuments: [agents ? 'AGENTS.md' : null, readme ? 'README.md' : null, packagePath || null].filter(Boolean),
+    git: { available: Boolean(gitStatus !== null || gitBranch !== 'no disponible'), branch: gitBranch, changedFiles: gitStatus ? gitStatus.split('\n').filter(Boolean) : [] },
+    tests,
+    findings,
+    summary,
+    completedAt: now()
   };
-  if (!state.logs) state.logs = [];
-  state.logs.unshift(logEntry);
-  if (state.logs.length > 200) state.logs.pop();
-  saveState(state);
-  return logEntry;
 }
 
-// SSE Real-time Event Broadcaster
-function emitRunEvent(state, runId, type, data) {
-  const eventObj = {
-    id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    runId,
-    type,
-    data,
-    timestamp: new Date().toISOString()
-  };
-  state.runEvents.push(eventObj);
-  saveState(state);
-
-  // Broadcast to connected SSE HTTP clients
-  const payload = `data: ${JSON.stringify(eventObj)}\n\n`;
-  sseClients.forEach(client => {
-    if (client.runId === runId || !client.runId) {
-      try {
-        client.res.write(payload);
-      } catch (e) {}
-    }
-  });
-  return eventObj;
+function conversationFor(body = {}) {
+  ensureConversationState();
+  const projectId = body.projectId || state.projects[0]?.id;
+  let conversation = state.conversations.find(item => item.id === body.conversationId);
+  if (!conversation) {
+    conversation = { id: id('conv'), projectId, title: 'Nueva conversación', createdAt: now(), updatedAt: now() };
+    state.conversations.unshift(conversation);
+  }
+  return conversation;
 }
 
-// MIME types dictionary for static server
-const MIME_TYPES = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon'
-};
+function chatAnswer(text, project) {
+  const request = String(text || '').trim();
+  const normalized = request.toLowerCase();
+  if (!request) return { type: 'error', text: 'Escribe una solicitud para comenzar.' };
+  if (REVIEW_REQUEST.test(request) || /\b(revisa|revisión|estado|cómo está|como esta)\b/i.test(request)) {
+    const review = reviewRepository(project);
+    if (!review.ok) return { type: 'blocked', text: `No pude revisar el proyecto: ${review.error}`, review };
+    const high = review.findings.filter(item => ['critical', 'high'].includes(item.severity));
+    const testText = review.tests.status === 'passed' ? 'Las pruebas configuradas pasaron.' : review.tests.status === 'failed' ? 'Las pruebas configuradas fallaron.' : 'No hay un script de pruebas ejecutable configurado.';
+    const answer = [
+      `Revisé **${review.project}** en modo solo lectura.`,
+      `Inspeccioné ${review.inspectedFiles.length} archivos, la rama \`${review.git.branch}\` y ${review.inspectedDocuments.length} documento(s).`,
+      testText,
+      review.findings.length ? `Encontré ${review.findings.length} hallazgo(s); ${high.length} son críticos o altos.` : 'No encontré problemas en las comprobaciones disponibles.',
+      'No modifiqué archivos ni ejecuté comandos recibidos desde el chat.'
+    ].join('\n\n');
+    return { type: 'review', text: answer, review };
+  }
+  if (/\b(qué puedes|que puedes|ayuda|help|cómo funciona|como funciona)\b/i.test(normalized)) {
+    return { type: 'answer', text: 'Puedo revisar el repositorio, consultar su estado Git y ejecutar las pruebas que estén declaradas. Para construir cambios todavía necesito conectar el worker real de Antigravity; por ahora no afirmaré que un cambio fue aplicado.' };
+  }
+  if (/\b(implementa|construye|crea|modifica|arregla|corrige|añade|agrega)\b/i.test(normalized)) {
+    return { type: 'blocked', text: 'Entendí que quieres modificar el proyecto. El ejecutor real todavía no está conectado en este MVP, así que no voy a simular cambios ni crear un diff falso. Primero puedo revisar el repositorio y preparar un plan verificable.' };
+  }
+  return { type: 'answer', text: `Entiendo tu solicitud: “${request}”. Para darte una respuesta basada en el proyecto, pide una revisión, por ejemplo: “Revisa el sistema y dime qué problemas tiene”.` };
+}
 
-// ===== ORCHESTRATOR RUN PIPELINE ENGINE =====
-function executeRunPipeline(state, runId) {
-  const run = state.runs.find(r => r.id === runId);
-  if (!run) return;
-
-  const proj = state.projects.find(p => p.id === run.projectId) || state.projects[0];
-  const projName = proj ? proj.name : 'iankaphone-web';
-  const worktreeBranch = run.worktreeBranch || `forge/run-${runId}`;
-
-  addLog(state, 'INFO', 'Orquestador', `Iniciando Run [${runId}] para conversación [${run.conversationId}]`);
-  
-  // Phase 1: Inspecting Repository Context
-  run.status = 'inspecting';
-  run.updatedAt = new Date().toISOString();
-  saveState(state);
-  emitRunEvent(state, runId, 'run.started', { status: 'inspecting', message: 'Iniciando inspección del repositorio...' });
-
+function runReviewTask(task) {
+  const project = state.projects.find(item => item.id === task.projectId) || state.projects[0];
+  task.kind = 'review';
+  task.status = 'running'; task.stage = 'inspect'; task.progress = 15; task.updatedAt = now();
+  task.result = 'Inspeccionando archivos, documentación, Git y pruebas configuradas...';
+  event('agent', `Revisión real iniciada: ${task.title}`); persist();
   setTimeout(() => {
-    emitRunEvent(state, runId, 'context.loaded', {
-      filesInspected: ['AGENTS.md', 'README.md', 'package.json'],
-      branch: proj ? proj.activeBranch : 'main',
-      repository: projName
-    });
-
-    // Phase 2: Planning (GPT Architect & Claude Reviewer)
-    run.status = 'planning';
-    run.updatedAt = new Date().toISOString();
-    saveState(state);
-
-    emitRunEvent(state, runId, 'agent.started', { agent: 'GPT-4o Architect', role: 'Technical Design' });
-    
-    setTimeout(() => {
-      emitRunEvent(state, runId, 'agent.completed', {
-        agent: 'GPT-4o Architect',
-        summary: run.archReasoning || 'Diseño modular con desacoplamiento de capas.'
-      });
-
-      emitRunEvent(state, runId, 'agent.started', { agent: 'Claude 3.5 Reviewer', role: 'Security & Risk Review' });
-
-      setTimeout(() => {
-        emitRunEvent(state, runId, 'agent.completed', {
-          agent: 'Claude 3.5 Reviewer',
-          summary: run.claudeReasoning || 'Auditoría OWASP completada. Sanitización de entradas y límites de tasa.'
-        });
-
-        emitRunEvent(state, runId, 'plan.created', {
-          planTitle: `Plan de Ejecución para "${run.prompt.slice(0, 40)}"`,
-          stepsCount: 4,
-          branch: worktreeBranch
-        });
-
-        // Phase 3: Executing (Worker Local & Git Worktree Isolation)
-        run.status = 'executing';
-        run.updatedAt = new Date().toISOString();
-        saveState(state);
-
-        emitRunEvent(state, runId, 'tool.started', { tool: 'git_worktree_add', path: `.forge/worktrees/${runId}` });
-        
-        setTimeout(() => {
-          emitRunEvent(state, runId, 'tool.output', {
-            tool: 'replace_file_content',
-            files: run.diff ? run.diff.filesChanged : ['src/index.ts']
-          });
-
-          emitRunEvent(state, runId, 'file.changed', {
-            files: run.diff ? run.diff.filesChanged : ['src/index.ts'],
-            patch: run.diff ? run.diff.patch : ''
-          });
-
-          // Phase 4: Validating (Tests & Build)
-          run.status = 'validating';
-          run.updatedAt = new Date().toISOString();
-          saveState(state);
-
-          emitRunEvent(state, runId, 'test.started', { suite: 'Jest Automated Unit Tests', total: 8 });
-
-          setTimeout(() => {
-            emitRunEvent(state, runId, 'test.completed', { passed: 8, failed: 0, coverage: '100%' });
-
-            // Phase 5: Reviewing & Waiting Approval
-            run.status = 'waiting_approval';
-            run.updatedAt = new Date().toISOString();
-            saveState(state);
-
-            emitRunEvent(state, runId, 'diff.ready', {
-              diff: run.diff,
-              worktreeBranch: worktreeBranch
-            });
-
-            emitRunEvent(state, runId, 'approval.required', {
-              message: `Ejecución finalizada con 8/8 pruebas aprobadas. ¿Autorizas el commit en ${projName}?`,
-              runId: runId
-            });
-
-            // Add Assistant message into conversation
-            const assistantMsg = {
-              id: `msg-${Date.now()}`,
-              conversationId: run.conversationId,
-              runId: run.id,
-              role: 'assistant',
-              content: run.prompt,
-              timestamp: new Date().toISOString(),
-              metadata: {
-                runId: run.id,
-                status: run.status,
-                diff: run.diff,
-                archReasoning: run.archReasoning,
-                claudeReasoning: run.claudeReasoning,
-                agyReasoning: run.agyReasoning,
-                worktreeBranch: worktreeBranch
-              }
-            };
-            state.messages.push(assistantMsg);
-            saveState(state);
-
-          }, 2000);
-        }, 2200);
-      }, 1800);
-    }, 2000);
-  }, 1500);
+    task.stage = 'analyze'; task.progress = 55; task.updatedAt = now();
+    task.result = 'Analizando estructura y evidencias del repositorio...'; event('agent', 'Analizador del repositorio terminó la inspección'); persist();
+  }, 700);
+  setTimeout(() => {
+    const review = reviewRepository(project);
+    task.review = review;
+    task.stage = review.ok ? 'report' : 'blocked'; task.progress = review.ok ? 100 : 0;
+    task.status = review.ok ? 'completed' : 'failed'; task.result = review.ok ? review.summary : review.error;
+    task.updatedAt = now(); event(review.ok ? 'success' : 'error', task.result); persist();
+  }, 1400);
 }
 
-// ===== HTTP SERVER =====
-const server = http.createServer((req, res) => {
-  const state = loadState();
-  const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = urlObj.pathname;
+function runTask(task) {
+  if (task.status === 'running') return;
+  if (isReviewRequest(task)) return runReviewTask(task);
+  task.status = 'blocked'; task.stage = 'waiting_executor'; task.progress = 0; task.updatedAt = now();
+  task.result = 'Solicitud recibida, pero el ejecutor real todavía no está conectado. No se modificaron archivos ni se generó un diff.';
+  event('error', `Ejecución bloqueada: worker real no conectado para “${task.title}”`); persist();
+}
 
-  // CORS Headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
+async function api(req, res, url) {
+  if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, worker: state.worker });
+  if (req.method === 'GET' && url.pathname === '/api/state') {
+    state.worker.lastHeartbeat = now();
+    return json(res, 200, { ...state, repo: repoSnapshot(ROOT) });
   }
-
-  // ===== API ROUTES =====
-
-  // 1. GET /api/status
-  if (req.method === 'GET' && pathname === '/api/status') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      ok: true,
-      worker: state.worker,
-      projectsCount: state.projects.length,
-      conversationsCount: state.conversations.length,
-      runsCount: state.runs.length
-    }));
-    return;
+  if (req.method === 'GET' && url.pathname === '/api/conversations') {
+    ensureConversationState();
+    return json(res, 200, { conversations: state.conversations, messages: state.messages });
   }
-
-  // 2. GET & POST /api/projects
-  if (pathname === '/api/projects') {
-    if (req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, projects: state.projects }));
-      return;
-    }
-    if (req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        try {
-          const data = JSON.parse(body);
-          const newProj = {
-            id: `proj-${Date.now().toString().slice(-4)}`,
-            name: data.name || 'nuevo-proyecto',
-            path: data.path || __dirname,
-            activeBranch: 'main',
-            status: 'active'
-          };
-          state.projects.push(newProj);
-          saveState(state);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, project: newProj }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: e.message }));
-        }
-      });
-      return;
-    }
+  if (req.method === 'POST' && url.pathname === '/api/chat') {
+    const body = await parseBody(req);
+    const text = String(body.message || '').trim();
+    if (!text) return json(res, 400, { error: 'El mensaje no puede estar vacío' });
+    const conversation = conversationFor(body);
+    const project = state.projects.find(item => item.id === conversation.projectId) || state.projects[0];
+    const userMessage = { id: id('msg'), conversationId: conversation.id, role: 'user', content: text, createdAt: now() };
+    const result = chatAnswer(text, project);
+    const assistantMessage = { id: id('msg'), conversationId: conversation.id, role: 'assistant', content: result.text, kind: result.type, review: result.review || null, createdAt: now() };
+    state.messages.push(userMessage, assistantMessage);
+    conversation.updatedAt = now();
+    conversation.title = conversation.title === 'Nueva conversación' ? text.slice(0, 60) : conversation.title;
+    event(result.type === 'review' ? 'success' : result.type === 'blocked' ? 'error' : 'agent', result.type === 'review' ? 'Revisión conversacional completada' : `Chat: ${text.slice(0, 80)}`);
+    persist();
+    return json(res, 201, { conversation, userMessage, assistantMessage });
   }
-
-  // 3. GET & POST /api/conversations
-  if (pathname === '/api/conversations' || pathname.startsWith('/api/conversations/')) {
-    if (req.method === 'GET' && pathname === '/api/conversations') {
-      const projectId = urlObj.searchParams.get('projectId');
-      let convs = state.conversations;
-      if (projectId) convs = convs.filter(c => c.projectId === projectId);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, conversations: convs }));
-      return;
-    }
-
-    if (req.method === 'POST' && pathname === '/api/conversations') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        try {
-          const data = JSON.parse(body);
-          const newConv = {
-            id: `conv-${Date.now().toString().slice(-4)}`,
-            projectId: data.projectId || state.projects[0].id,
-            title: data.title || 'Nueva Conversación',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-          state.conversations.unshift(newConv);
-          saveState(state);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, conversation: newConv }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: e.message }));
-        }
-      });
-      return;
-    }
-
-    // GET /api/conversations/:id
-    const convIdMatch = pathname.match(/^\/api\/conversations\/([^\/]+)$/);
-    if (req.method === 'GET' && convIdMatch) {
-      const convId = convIdMatch[1];
-      const conv = state.conversations.find(c => c.id === convId);
-      if (!conv) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Conversación no encontrada' }));
-        return;
-      }
-      const msgs = state.messages.filter(m => m.conversationId === convId);
-      const runs = state.runs.filter(r => r.conversationId === convId);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, conversation: conv, messages: msgs, runs }));
-      return;
-    }
-
-    // POST /api/conversations/:id/messages (Sends message & triggers Run)
-    const msgMatch = pathname.match(/^\/api\/conversations\/([^\/]+)\/messages$/);
-    if (req.method === 'POST' && msgMatch) {
-      const convId = msgMatch[1];
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        try {
-          const data = JSON.parse(body);
-          const text = data.content || data.title;
-          const conv = state.conversations.find(c => c.id === convId);
-          const targetProjectId = data.projectId || (conv ? conv.projectId : state.projects[0].id);
-
-          // 1. Save User Message
-          const userMsg = {
-            id: `msg-${Date.now()}`,
-            conversationId: convId,
-            role: 'user',
-            content: text,
-            timestamp: new Date().toISOString()
-          };
-          state.messages.push(userMsg);
-
-          // 2. Intent Classifier & Intelligent Context Generator
-          const titleLower = text.toLowerCase();
-          const targetProj = state.projects.find(p => p.id === targetProjectId) || state.projects[0];
-          const projName = targetProj ? targetProj.name : 'iankaphone-web';
-          const runId = `run-${Date.now().toString().slice(-4)}`;
-          const worktreeBranchName = `forge/run-${runId}`;
-
-          const isReview = titleLower.match(/revisar|analizar|auditar|explicar|verificar|diagnos|hallazgos|status|estado/i);
-
-          let intent, targetFiles, patchCode, archSummary, riskSummary, archReasoning, claudeReasoning, agyReasoning, toolPills;
-
-          if (isReview) {
-            intent = 'review';
-            targetFiles = ['AGENTS.md', 'README.md', 'package.json', 'server.js', 'public/app.js'];
-            patchCode = ''; // No code diff for pure analysis/review requests!
-            archSummary = `Revisión y análisis de arquitectura en ${projName}`;
-            riskSummary = 'Auditoría estática completada: 0 fallos críticos en la estructura del proyecto.';
-            archReasoning = `Analicé la arquitectura del repositorio ${projName}. Se examinaron los componentes del Control Plane, el orquestador y la suite de archivos principales (${targetFiles.join(', ')}). No hay inconsistencias en la separación de responsabilidades.`;
-            claudeReasoning = `Revisión de seguridad y permisos: El repositorio cumple con el aislamiento en Worktrees y no presenta fuga de secretos ni ejecución directa no autorizada.`;
-            agyReasoning = `Inspección de árbol finalizada. Se leyeron 5 archivos clave sin aplicar modificaciones de código innecesarias.`;
-            toolPills = [
-              { icon: '📄', label: 'read_context', text: 'Revisé la guía de contexto personal y listé archivos del proyecto' },
-              { icon: '@', label: 'personal_context', text: 'Interacted with Personal Context' },
-              { icon: '📑', label: 'inspect_files', text: 'Revisé los archivos principales y la configuración del proyecto' },
-              { icon: '@', label: 'audit_check', text: 'Revisaste el proyecto y confirmaste el análisis' }
-            ];
-          } else if (titleLower.match(/checkout|carrito|abandono|recuperaci/)) {
-            intent = 'build';
-            targetFiles = ['src/services/checkout_recovery.ts', 'src/events/cart_abandonment.ts', 'tests/checkout_recovery.test.ts'];
-            archSummary = 'Pipeline de recuperación: webhook de abandono → cola Redis → servicio SMTP con token temporal.';
-            riskSummary = 'Rate-limiting en envíos, tokens temporales con expiración de 24h, encriptación AES-256.';
-            archReasoning = `Diseñé un pipeline de 3 etapas para recuperación de carritos abandonados: (1) webhook de inactividad, (2) cola Redis asíncrona, y (3) servicio SMTP con tokens seguros.`;
-            claudeReasoning = `Verifiqué expiración de tokens en 24h, rate-limiting de 3 emails/hora por usuario y sanitización de entradas del webhook.`;
-            agyReasoning = `Creé ${targetFiles.length} archivos aislados en .forge/worktrees/${runId}. 8/8 pruebas unitarias pasaron con 100% de cobertura.`;
-            patchCode = 'diff --git a/src/services/checkout_recovery.ts\n--- /dev/null\n+++ b/src/services/checkout_recovery.ts\n@@ -0,0 +1,22 @@\n+import { sendEmail } from "../utils/mailer";\n+import { generateSecureToken } from "../utils/crypto";\n+\n+export async function processAbandonedCheckout(cartId: string, email: string) {\n+  const token = generateSecureToken(cartId, 24);\n+  const recoveryUrl = "https://appianka.com/checkout/recover?t=" + token;\n+  return await sendEmail({ to: email, subject: "Tu carrito te espera", data: { recoveryUrl } });\n+}';
-            toolPills = [
-              { icon: '🔨', label: 'git_worktree_add', text: `.forge/worktrees/${worktreeBranchName}` },
-              { icon: '📝', label: 'replace_file_content', text: `${targetFiles[0]} (+23 -15)` },
-              { icon: '⚡', label: 'run_command', text: 'npm test --coverage (8/8 passed ✓)' }
-            ];
-          } else if (titleLower.match(/auth|autenticaci|login|sesion|sesión|password|contraseña/)) {
-            intent = 'build';
-            targetFiles = ['src/middleware/auth.ts', 'src/services/session_manager.ts', 'tests/auth.test.ts'];
-            archSummary = 'Sistema de autenticación JWT con rotación de tokens y cookies HttpOnly.';
-            riskSummary = 'Prevención CSRF SameSite=Strict, throttling de 5 intentos/min en login.';
-            archReasoning = `Implementé autenticación JWT con cookies HttpOnly para evitar acceso desde JS del cliente. Tokens rotan cada 15 min y contraseñas hasheadas con bcrypt.`;
-            claudeReasoning = `Verifiqué protección contra CSRF, XSS (HttpOnly cookies) y throttling de login con lockout de 15 min.`;
-            agyReasoning = `Creé el middleware de autenticación en .forge/worktrees/${runId}. 8/8 pruebas unitarias exitosas.`;
-            patchCode = 'diff --git a/src/middleware/auth.ts\n--- /dev/null\n+++ b/src/middleware/auth.ts\n@@ -0,0 +1,18 @@\n+import jwt from "jsonwebtoken";\n+export function verifySession(req, res, next) {\n+  const token = req.cookies?.session_token;\n+  if (!token) return res.status(401).json({ error: "No autorizado" });\n+  req.user = jwt.verify(token, process.env.JWT_SECRET);\n+  next();\n+}';
-            toolPills = [
-              { icon: '🔨', label: 'git_worktree_add', text: `.forge/worktrees/${worktreeBranchName}` },
-              { icon: '📝', label: 'replace_file_content', text: `${targetFiles[0]} (+18 -0)` },
-              { icon: '⚡', label: 'run_command', text: 'npm test --coverage (8/8 passed ✓)' }
-            ];
-          } else {
-            intent = 'build';
-            const cleanName = text.replace(/[^a-zA-Z0-9 ]/g, '').split(' ').slice(0, 3).map(w => w.toLowerCase()).join('_') || 'feature';
-            targetFiles = [`src/services/${cleanName}.ts`, `tests/${cleanName}.test.ts`];
-            archSummary = `Módulo "${text.slice(0, 30)}" con arquitectura desacoplada.`;
-            riskSummary = `Validación de tipos estricta y sanitización de inputs.`;
-            archReasoning = `Para "${text}" en ${projName}, diseñé un módulo desacoplado con interfaz TypeScript estricta y servicios aislados.`;
-            claudeReasoning = `Audité contra OWASP Top 10: sanitización de entradas, ausencia de SQL injection y manejo de errores estructurado.`;
-            agyReasoning = `Generé los archivos en la rama ${worktreeBranchName}. Pruebas ejecutadas con 100% de éxito.`;
-            patchCode = `diff --git a/src/services/${cleanName}.ts\n--- /dev/null\n+++ b/src/services/${cleanName}.ts\n@@ -0,0 +1,15 @@\n+export async function executeImprovement() {\n+  return { success: true, instruction: "${text}", timestamp: Date.now() };\n+}`;
-            toolPills = [
-              { icon: '🔨', label: 'git_worktree_add', text: `.forge/worktrees/${worktreeBranchName}` },
-              { icon: '📝', label: 'replace_file_content', text: `${targetFiles[0]}` },
-              { icon: '⚡', label: 'run_command', text: 'npm test --coverage (8/8 passed ✓)' }
-            ];
-          }
-
-          // 3. Create Run object
-          const newRun = {
-            id: runId,
-            conversationId: convId,
-            projectId: targetProjectId,
-            status: 'queued',
-            currentPhase: 'inspecting',
-            prompt: text,
-            intent: intent,
-            architectModel: data.architectModel || 'GPT-4o (Arquitectura)',
-            reviewerModel: data.reviewerModel || 'Claude 3.5 Sonnet (Riesgos)',
-            worktreeBranch: worktreeBranchName,
-            archReasoning,
-            claudeReasoning,
-            agyReasoning,
-            toolPills,
-            diff: {
-              filesChanged: targetFiles,
-              patch: patchCode
-            },
-            tests: { passed: 8, failed: 0, duration: '2.1s' },
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-
-          state.runs.unshift(newRun);
-          if (conv) {
-            conv.title = text.slice(0, 45);
-            conv.updatedAt = new Date().toISOString();
-          }
-          saveState(state);
-
-          // 4. Trigger Async Pipeline
-          executeRunPipeline(state, runId);
-
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, message: userMsg, run: newRun }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: e.message }));
-        }
-      });
-      return;
-    }
+  if (req.method === 'POST' && url.pathname === '/api/projects') {
+    const body = await parseBody(req);
+    if (!body.name) return json(res, 400, { error: 'El nombre del proyecto es obligatorio' });
+    const project = { id: id('proj'), name: body.name, localPath: body.localPath || ROOT, githubUrl: body.githubUrl || '', branch: body.branch || 'main', status: 'connected', createdAt: now() };
+    state.projects.unshift(project); event('success', `Proyecto conectado: ${project.name}`); persist(); return json(res, 201, project);
   }
-
-  // 4. GET /api/runs/:id & SSE Streaming /api/runs/:id/events
-  const runIdMatch = pathname.match(/^\/api\/runs\/([^\/]+)$/);
-  if (req.method === 'GET' && runIdMatch) {
-    const runId = runIdMatch[1];
-    const run = state.runs.find(r => r.id === runId);
-    if (!run) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'Run no encontrado' }));
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, run }));
-    return;
+  if (req.method === 'POST' && url.pathname === '/api/tasks') {
+    const body = await parseBody(req);
+    if (!body.title) return json(res, 400, { error: 'El título de la tarea es obligatorio' });
+    const task = { id: id('task'), projectId: body.projectId || state.projects[0]?.id, title: body.title, description: body.description || '', status: 'queued', stage: 'queued', priority: body.priority || 'medium', agent: 'GPT Architect', createdAt: now(), updatedAt: now(), progress: 0 };
+    state.tasks.unshift(task); event('task', `Nueva tarea en cola: ${task.title}`); persist(); runTask(task); return json(res, 201, task);
   }
-
-  // SSE Stream Endpoint: GET /api/runs/:id/events (or global /api/runs/events)
-  const sseMatch = pathname.match(/^\/api\/runs\/([^\/]+)\/events$/) || pathname === '/api/runs/events';
-  if (req.method === 'GET' && sseMatch) {
-    const targetRunId = typeof sseMatch === 'object' && sseMatch[1] !== 'events' ? sseMatch[1] : null;
-
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive'
-    });
-
-    const clientObj = { runId: targetRunId, res };
-    sseClients.push(clientObj);
-
-    // Initial keepalive comment
-    res.write(`: sse connected for run ${targetRunId || 'all'}\n\n`);
-
-    req.on('close', () => {
-      const idx = sseClients.indexOf(clientObj);
-      if (idx !== -1) sseClients.splice(idx, 1);
-    });
-    return;
+  const runMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/run$/);
+  if (req.method === 'POST' && runMatch) {
+    const task = state.tasks.find(item => item.id === runMatch[1]);
+    if (!task) return json(res, 404, { error: 'Tarea no encontrada' });
+    runTask(task); return json(res, 200, task);
   }
+  return json(res, 404, { error: 'Ruta no encontrada' });
+}
 
-  // 5. POST /api/runs/:id/approve & POST /api/runs/:id/reject & POST /api/runs/:id/retry
-  const runActionMatch = pathname.match(/^\/api\/runs\/([^\/]+)\/(approve|reject|retry|cancel)$/);
-  if (req.method === 'POST' && runActionMatch) {
-    const runId = runActionMatch[1];
-    const action = runActionMatch[2];
-    const run = state.runs.find(r => r.id === runId);
-
-    if (!run) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'Run no encontrado' }));
-      return;
-    }
-
-    if (action === 'approve') {
-      run.status = 'approved';
-      run.updatedAt = new Date().toISOString();
-      emitRunEvent(state, runId, 'approval.granted', { message: 'Cambios aprobados e integrados en main.' });
-    } else if (action === 'reject') {
-      run.status = 'rejected';
-      run.updatedAt = new Date().toISOString();
-      emitRunEvent(state, runId, 'run.cancelled', { message: 'Run rechazado por el usuario. Worktree revertido.' });
-    } else if (action === 'retry') {
-      run.status = 'queued';
-      run.updatedAt = new Date().toISOString();
-      executeRunPipeline(state, runId);
-    } else if (action === 'cancel') {
-      run.status = 'cancelled';
-      run.updatedAt = new Date().toISOString();
-      emitRunEvent(state, runId, 'run.cancelled', { message: 'Run detenido por el usuario.' });
-    }
-
-    saveState(state);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, run }));
-    return;
-  }
-
-  // 6. GET /api/workers
-  if (req.method === 'GET' && pathname === '/api/workers') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, workers: state.workers }));
-    return;
-  }
-
-  // 7. Backward Compatibility: /api/tasks Proxy to Runs/Conversations
-  if (pathname === '/api/tasks' || pathname.startsWith('/api/tasks/')) {
-    if (req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, tasks: state.runs.map(r => ({
-        id: r.id,
-        title: r.prompt,
-        description: r.prompt,
-        projectId: r.projectId,
-        status: r.status,
-        steps: [
-          { name: 'GPT: Arquitectura', summary: r.archReasoning || 'Arquitectura desacoplada', status: 'completed', agent: 'GPT-4o' },
-          { name: 'Claude: Revisión', summary: r.claudeReasoning || 'Auditoría de seguridad', status: 'completed', agent: 'Claude 3.5' },
-          { name: 'Antigravity: Ejecución', summary: r.agyReasoning || 'Tests y parches en worktree', status: 'completed', agent: 'Antigravity' }
-        ],
-        diff: r.diff,
-        worktreeBranch: r.worktreeBranch
-      })) }));
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/tasks') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => {
-        try {
-          const data = JSON.parse(body);
-          // Auto create or find conversation
-          let conv = state.conversations.find(c => c.projectId === data.projectId);
-          if (!conv) {
-            conv = {
-              id: `conv-${Date.now().toString().slice(-4)}`,
-              projectId: data.projectId || state.projects[0].id,
-              title: data.title,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            };
-            state.conversations.unshift(conv);
-          }
-          // Forward to conversations messages endpoint logic
-          const runId = `run-${Date.now().toString().slice(-4)}`;
-          const worktreeBranchName = `forge/run-${runId}`;
-          const newRun = {
-            id: runId,
-            conversationId: conv.id,
-            projectId: data.projectId || state.projects[0].id,
-            status: 'queued',
-            prompt: data.title,
-            worktreeBranch: worktreeBranchName,
-            diff: { filesChanged: ['src/index.ts'], patch: 'diff --git a/src/index.ts...' },
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-          state.runs.unshift(newRun);
-          saveState(state);
-          executeRunPipeline(state, runId);
-
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, task: { id: runId, title: data.title } }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: e.message }));
-        }
-      });
-      return;
-    }
-  }
-
-  // ===== STATIC FILE SERVER =====
-  let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
-  if (!filePath.startsWith(PUBLIC_DIR)) {
-    res.writeHead(403, { 'Content-Type': 'text/plain' });
-    res.end('403 Forbidden');
-    return;
-  }
-
-  fs.stat(filePath, (err, stats) => {
-    if (err || !stats.isFile()) {
-      filePath = path.join(PUBLIC_DIR, 'index.html');
-    }
-    const ext = path.extname(filePath).toLowerCase();
-    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-
-    fs.readFile(filePath, (err, content) => {
-      if (err) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('500 Internal Server Error');
-      } else {
-        res.writeHead(200, { 'Content-Type': contentType });
-        res.end(content);
-      }
-    });
+function serve(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname.startsWith('/api/')) return api(req, res, url).catch(() => json(res, 400, { error: 'Solicitud inválida' }));
+  const requested = url.pathname === '/' ? '/index.html' : url.pathname;
+  const file = path.normalize(path.join(PUBLIC_DIR, requested));
+  if (!file.startsWith(PUBLIC_DIR)) return json(res, 403, { error: 'Acceso denegado' });
+  fs.readFile(file, (err, data) => {
+    if (err) return json(res, 404, { error: 'No encontrado' });
+    const ext = path.extname(file); const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.svg': 'image/svg+xml' };
+    res.writeHead(200, { 'Content-Type': `${types[ext] || 'application/octet-stream'}; charset=utf-8` }); res.end(data);
   });
-});
+}
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`\n======================================================`);
-  console.log(`🤖 Agente de Programación Software - Codex Control Plane`);
-  console.log(`🚀 Servidor ejecutándose en: http://127.0.0.1:${PORT}`);
-  console.log(`======================================================\n`);
-});
+http.createServer(serve).listen(PORT, () => console.log(`Dashboard listo en http://localhost:${PORT}`));

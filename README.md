@@ -1,88 +1,42 @@
-# Agente de Programación Software (Dashboard & Orquestador Codex)
+# Forge Control — agente de programación software
 
-MVP funcional del **Dashboard Orquestador de Agentes IA y Worker Local**, adaptado para flujos multi-agente aislados en Git local (tipo Codex / Antigravity).
+MVP local de un dashboard tipo Codex para coordinar arquitectos de IA, revisores y un worker local sobre proyectos Git.
 
----
+## Arranque
 
-## 🚀 Inicio Rápido
-
-Para ejecutar el Dashboard:
+Requiere Node.js 18 o superior. No necesita instalar dependencias:
 
 ```bash
-cd "/Users/andressanabria/Desktop/iankaphone web/agente de programacion software"
 npm run dev
 ```
 
-Luego abre en tu navegador:
-👉 **[http://localhost:4173](http://localhost:4173)**
+Abre [http://localhost:4173](http://localhost:4173).
 
-> ℹ️ **Nota de Dependencias:** Este MVP utiliza Node.js nativo (módulos `http`, `fs`, `path`, `child_process`, `crypto`). **No requiere `npm install`**.
+## Qué incluye esta primera versión
 
----
+- Dashboard responsive con resumen, tareas, proyectos y actividad.
+- Persistencia local en `data/state.json`.
+- Flujo de revisión real en modo solo lectura: inspección de archivos, documentación, Git y pruebas configuradas.
+- Las solicitudes de construcción todavía usan el flujo simulado del MVP y se identifican por separado de una revisión.
+- Lectura segura del estado Git del propio proyecto.
+- Formularios para crear tareas y conectar repositorios.
+- Contrato de API preparado para sustituir los agentes simulados por GPT, Claude y Antigravity.
 
-## 🏛️ Arquitectura
+## Siguiente integración
 
-```
-Dashboard Web (Puerto 4173)
-   ↓
-Orquestador (server.js)
-   ↓
-GPT-4o (Arquitecto) + Claude 3.5 (Revisor de Riesgos)
-   ↓
-Worker Local Autenticado
-   ↓
-Git Worktree Aislado (.worktrees/)
-   ↓
-Antigravity Engine (Ejecución de cambios)
-   ↓
-Pruebas + Diffs + Aprobación Humana Manual
-```
+1. Sustituir `runTask` por una cola persistente y un `worker-local` separado.
+2. Añadir autenticación y OAuth/GitHub App con permisos mínimos.
+3. Añadir worktrees efímeros, lista blanca de comandos y revisión de diffs.
+4. Conectar los adaptadores de OpenAI, Anthropic y Antigravity detrás del orquestador.
 
----
+No se ejecutan comandos recibidos desde el navegador. La revisión solo ejecuta comandos fijos y de lectura (`git status`, `git branch` y `npm test` cuando `package.json` lo declara); no modifica archivos ni afirma que las pruebas pasaron si no existe un script ejecutable.
 
-## 📋 Características Incluidas
+## Revisar el proyecto
 
-1. **Dashboard Responsive Modo Oscuro (Estilo Codex & Antigravity IDE)**:
-   - Panel de Estadísticas en Vivo: Repos conectados, tareas activas, aprobaciones pendientes y tasa de éxito de pruebas.
-   - Visor interactivo de diagramas de arquitectura.
+Crea una tarea con un título o descripción que incluya `revisar`, `auditar`, `analizar` o `review`. El sistema:
 
-2. **Proyectos & Repositorios**:
-   - Inspección segura del estado de Git local (`git status`, rama activa, commits).
-   - Monitoreo de ramas aisladas en `.worktrees/`.
-
-3. **Flujo de Agentes (Pipeline de 7 Pasos)**:
-   - **Paso 1:** GPT-4o propone la arquitectura.
-   - **Paso 2:** Claude 3.5 Sonnet revisa vulnerabilidades y riesgos.
-   - **Paso 3:** Creación del Git Worktree aislado.
-   - **Paso 4:** Antigravity ejecuta las modificaciones de código.
-   - **Paso 5:** Test Runner ejecuta las pruebas unitarias.
-   - **Paso 6:** GPT + Claude realizan el Code Review del diff.
-   - **Paso 7:** Puerta de Aprobación Humana.
-
-4. **Visor de Diffs**:
-   - Resaltado de líneas agregadas (verde) y eliminadas (rojo).
-   - Lista de archivos modificados.
-
-5. **Puerta de Aprobación Humana**:
-   - Aprobación explícita antes de hacer commit en `main` o abrir un Pull Request.
-   - Opción de rechazar y descartar el entorno aislado.
-
-6. **Terminal y Logs del Worker**:
-   - Registro en tiempo real de eventos, estado del worker local y ejecuciones.
-
----
-
-## 📁 Estructura del Proyecto
-
-```
-agente de programacion software/
-├── package.json          # Script "dev": "node server.js"
-├── server.js             # Servidor HTTP nativo Node.js y REST API
-├── data/
-│   └── state.json        # Persistencia del estado, tareas y logs
-├── public/
-│   ├── index.html        # SPA HTML5 semántico
-│   ├── styles.css        # Estilos Codex Modo Oscuro
-│   └── app.js            # Lógica cliente y polling en vivo
-└── README.md             # Documentación
-```
+1. Inspecciona la estructura y documentos del proyecto.
+2. Comprueba el estado Git y la rama.
+3. Ejecuta `npm test` únicamente si está configurado.
+4. Devuelve hallazgos con severidad, evidencia y recomendación.
+5. No genera diffs ni modifica archivos durante una revisión.
