@@ -547,9 +547,10 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, () => {
   console.log(`\n======================================================`);
   console.log(`🤖 Agente de Programación Software - Dashboard Codex`);
-  console.log(`🚀 Servidor ejecutándose en: http://127.0.0.1:${PORT}`);
+  console.log(`🚀 Servidor ejecutándose en: http://localhost:${PORT}`);
+  console.log(`🚀 También disponible en: http://127.0.0.1:${PORT}`);
   console.log(`======================================================\n`);
 });
