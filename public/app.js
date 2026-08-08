@@ -537,7 +537,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.ok) return;
       data.agents.forEach(agent => {
         // Mapear IDs del API a IDs de los badges en el HTML
-        const badgeIdMap = { 'gpt-4o': 'gpt', 'claude-3.5': 'claude', 'antigravity': 'antigravity' };
+        const badgeIdMap = { 'gpt-4o': 'gpt', 'claude-3.5': 'claude', 'antigravity': 'antigravity', 'zai-glm': 'zai-glm' };
         const badgeKey = badgeIdMap[agent.id] || agent.id;
         const badge = document.getElementById(`agent-badge-${badgeKey}`);
         if (!badge) return;
@@ -546,7 +546,8 @@ document.addEventListener('DOMContentLoaded', () => {
                    : '🔴';
         const label = agent.id === 'gpt-4o' ? `🧠 GPT-4o (Arquitecto) ${icon}`
                     : agent.id === 'claude-3.5' ? `🛡️ Claude 3.5 (Revisor) ${icon}`
-                    : `✨ Antigravity (Líder ${icon})`;
+                    : agent.id === 'zai-glm' ? `🤖 Z.ai GLM-5.2 ${icon}`
+                    : `✨ Antigravity (Líder) ${icon}`;
         badge.textContent = label;
         badge.setAttribute('data-status', agent.status);
       });
@@ -564,6 +565,75 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch { /* silently fail — la UI muestra el último estado conocido */ }
   }
+
+  // ===== Z.AI CONFIG MODAL =====
+  const zaiModal = document.getElementById('zai-config-modal');
+  const zaiApiKeyInput = document.getElementById('zai-api-key-input');
+  const zaiConfigStatus = document.getElementById('zai-config-status');
+  const zaiConnectBtn = document.getElementById('zai-connect-btn');
+  const zaiDisconnectBtn = document.getElementById('zai-disconnect-btn');
+
+  if (document.getElementById('btn-settings')) {
+    document.getElementById('btn-settings').addEventListener('click', () => {
+      zaiModal.style.display = 'flex';
+      fetch('/api/agents').then(r => r.json()).then(data => {
+        const zai = data.agents?.find(a => a.id === 'zai-glm');
+        if (zai?.status === 'connected') {
+          zaiApiKeyInput.value = '••••••••••••';
+          zaiDisconnectBtn.style.display = 'inline-block';
+          zaiConnectBtn.textContent = 'Actualizar';
+          zaiConfigStatus.textContent = '🟢 Conectado';
+          zaiConfigStatus.style.color = 'var(--success)';
+        } else {
+          zaiApiKeyInput.value = '';
+          zaiDisconnectBtn.style.display = 'none';
+          zaiConnectBtn.textContent = 'Conectar';
+          zaiConfigStatus.textContent = zai?.status === 'auth_error' ? '🔴 Error de autenticación' : '⚠️ No configurado';
+          zaiConfigStatus.style.color = zai?.status === 'auth_error' ? 'var(--danger)' : 'var(--text-dim)';
+        }
+      });
+    });
+  }
+
+  document.getElementById('zai-modal-close').addEventListener('click', () => zaiModal.style.display = 'none');
+  zaiModal.addEventListener('click', (e) => { if (e.target === zaiModal) zaiModal.style.display = 'none'; });
+
+  zaiConnectBtn.addEventListener('click', async () => {
+    const key = zaiApiKeyInput.value.trim();
+    if (!key || key === '••••••••••••') { zaiConfigStatus.textContent = '⚠️ Ingresa una API Key'; return; }
+    zaiConfigStatus.textContent = '⏳ Conectando...';
+    zaiConnectBtn.disabled = true;
+    try {
+      const res = await fetch('/api/adapters/zai/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: key })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        zaiConfigStatus.textContent = '🟢 Conectado exitosamente';
+        zaiConfigStatus.style.color = 'var(--success)';
+        zaiDisconnectBtn.style.display = 'inline-block';
+        zaiApiKeyInput.value = '••••••••••••';
+        zaiConnectBtn.textContent = 'Actualizar';
+        fetchAgentStatus();
+      } else {
+        zaiConfigStatus.textContent = `🔴 ${data.error}`;
+        zaiConfigStatus.style.color = 'var(--danger)';
+      }
+    } catch { zaiConfigStatus.textContent = '🔴 Error de conexión'; zaiConfigStatus.style.color = 'var(--danger)'; }
+    zaiConnectBtn.disabled = false;
+  });
+
+  zaiDisconnectBtn.addEventListener('click', async () => {
+    await fetch('/api/adapters/zai/configure', { method: 'DELETE' });
+    zaiConfigStatus.textContent = '⚠️ Desconectado';
+    zaiConfigStatus.style.color = 'var(--text-dim)';
+    zaiDisconnectBtn.style.display = 'none';
+    zaiApiKeyInput.value = '';
+    zaiConnectBtn.textContent = 'Conectar';
+    fetchAgentStatus();
+  });
 
   refreshAll();
 

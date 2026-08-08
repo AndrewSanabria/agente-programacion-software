@@ -149,6 +149,7 @@
             <div class="toolbar-right">
               <select id="select-ai-model" class="model-select-pill" style="border-color:var(--primary);font-weight:600;">
                 <option value="Antigravity AI (Líder Orquestador)">✨ Antigravity AI (Líder Orquestador)</option>
+                <option value="Z.ai GLM-5.2">🤖 Z.ai GLM-5.2 (AI Engine)</option>
                 <option value="GPT-4o (Arquitectura)">🧠 GPT-4o (Arquitecto)</option>
                 <option value="Claude 3.5 Sonnet (Riesgos)">🛡️ Claude 3.5 (Revisor OWASP)</option>
               </select>
@@ -218,11 +219,35 @@
           <span class="sub-agent agy" id="agent-badge-antigravity" data-status="loading" style="background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid var(--primary);">✨ Antigravity ⏳</span>
           <span class="sub-agent gpt" id="agent-badge-gpt" data-status="loading">🧠 GPT-4o ⏳</span>
           <span class="sub-agent claude" id="agent-badge-claude" data-status="loading">🛡️ Claude 3.5 ⏳</span>
+          <span class="sub-agent zai" id="agent-badge-zai-glm" data-status="loading">🤖 Z.ai GLM-5.2 ⏳</span>
         </div>
       </div>
 
     </aside>
 
+  </div>
+
+  <!-- Z.ai Configuration Modal -->
+  <div id="zai-config-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🤖 Conectar Z.ai GLM-5.2</h3>
+        <button class="modal-close" id="zai-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px;">
+          Ingresa tu API Key de <a href="https://z.ai/model-api" target="_blank" style="color:var(--primary);">Z.ai</a> para habilitar respuestas de IA reales.
+        </p>
+        <label for="zai-api-key-input" style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:4px;">API Key</label>
+        <input type="password" id="zai-api-key-input" class="modal-input"
+          placeholder="zai-xxxxxxxxxxxxxxxx" autocomplete="off" />
+        <div id="zai-config-status" style="margin-top:10px;font-size:12px;color:var(--text-dim);"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="zai-disconnect-btn" style="display:none;">Desconectar</button>
+        <button class="btn-primary" id="zai-connect-btn">Conectar</button>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>
