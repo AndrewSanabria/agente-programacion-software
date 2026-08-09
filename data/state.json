@@ -2690,7 +2690,7 @@
   "worker": {
     "status": "online",
     "name": "worker-local-mac-pro",
-    "lastHeartbeat": "2026-08-09T20:13:49.588Z",
+    "lastHeartbeat": "2026-08-09T20:37:21.796Z",
     "pid": 13065,
     "activePort": 4173,
     "connected": true
