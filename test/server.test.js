@@ -106,16 +106,21 @@ test('4. Rechazo de token de worker inválido (401 Unauthorized)', async () => {
   assert.match(res.body.error, /inválido/i);
 });
 
-// 5. Rechazo de rutas fuera del workspace (Path Jail)
-test('5. Rechazo de rutas fuera del workspace (Path Jail)', async () => {
+// 5. Rechazo de rutas fuera del workspace (Path Jail con evasión de prefijo)
+test('5. Rechazo de rutas fuera del workspace (Path Jail anti evasión de prefijo)', async () => {
   const invalidPathCheck = validateWorkspacePath('/tmp/hack_outside_directory');
   assert.equal(invalidPathCheck.ok, false);
   assert.match(invalidPathCheck.error, /Acceso denegado/i);
 
+  // Intento de evasión por prefijo similar: /path/to/project-hacker
+  const prefixEvasionCheck = validateWorkspacePath(FORGE_PROJECTS_ROOT + '-hacker');
+  assert.equal(prefixEvasionCheck.ok, false);
+  assert.match(prefixEvasionCheck.error, /Acceso denegado/i);
+
   const res = await httpRequest('/api/workers/register', 'POST', {
     workerId: 'test_worker_jail',
     token: FORGE_WORKER_TOKEN,
-    root: '/etc/shadow_forbidden'
+    root: FORGE_PROJECTS_ROOT + '-hacker'
   });
 
   assert.equal(res.status, 403);
@@ -169,7 +174,7 @@ test('7. Cancelación y reintento de runs', async () => {
 });
 
 // 8. SSE con eventos progresivos
-test('8. Subscripción a SSE de runs en /api/runs/:id/events', async () => {
+test('8. Subscripción a SSE de runs en /api/runs/:id/events y validación de payload', async () => {
   const resConv = await httpRequest('/api/conversations', 'POST', {
     projectId: 'proj_demo',
     title: 'Prueba SSE'
@@ -184,6 +189,7 @@ test('8. Subscripción a SSE de runs en /api/runs/:id/events', async () => {
   const sseRes = await httpRequest(`/api/runs/${runId}/events`, 'GET');
   assert.equal(sseRes.status, 200);
   assert.equal(sseRes.headers['content-type'], 'text/event-stream');
+  assert.match(sseRes.raw, /data: \{"type":"state"/);
 });
 
 // 9. Ausencia de ejecución arbitraria desde el navegador
@@ -195,7 +201,12 @@ test('9. El servidor rechaza la ejecución arbitraria de comandos recibidos por 
   assert.match(res.body.assistantMessage.content, /Antigravity AI/i);
 });
 
-// 10. Más de cero pruebas ejecutables en npm test
-test('10. La suite de pruebas contiene múltiples tests ejecutables reales', () => {
-  assert.ok(true, 'Suite de pruebas activa y ejecutable con node --test');
+// 10. Verificación de contrato real AntigravityAdapter
+test('10. Contrato de AntigravityAdapter devuelve missing_credentials o disconnected en ausencia de URL remota', async () => {
+  const AntigravityAdapter = require('../antigravity-adapter');
+  const adapter = new AntigravityAdapter();
+  const health = await adapter.healthCheck();
+  assert.equal(health.ok, false);
+  assert.equal(health.status, 'missing_credentials');
+  assert.equal(adapter.connected, false);
 });

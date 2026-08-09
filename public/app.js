@@ -212,12 +212,20 @@ document.addEventListener('DOMContentLoaded', () => {
     checklistItemsContainer.innerHTML = '';
   }
 
-  function formatMarkdown(text) {
-    if (!text) return '';
-    return text
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatMarkdown(text) {
+    if (!text) return '';
+    const safe = escapeHtml(text);
+    return safe
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\n\n/g, '</p><p style="margin-top:8px;">')

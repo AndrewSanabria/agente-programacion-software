@@ -13,8 +13,9 @@ const DATA_DIR = path.join(ROOT, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const PORT = Number(process.env.PORT || 4173);
 
-const FORGE_WORKER_TOKEN = process.env.FORGE_WORKER_TOKEN || 'forge_worker_local_token_sec_4173';
+const FORGE_WORKER_TOKEN = process.env.FORGE_WORKER_TOKEN || ('forge_sec_' + crypto.randomBytes(16).toString('hex'));
 const FORGE_PROJECTS_ROOT = path.resolve(process.env.FORGE_PROJECTS_ROOT || ROOT);
+const SERVER_HMAC_SECRET = process.env.SERVER_HMAC_SECRET || crypto.randomBytes(32).toString('hex');
 
 const antigravityAdapter = new AntigravityAdapter({
   url: process.env.ANTIGRAVITY_URL,
@@ -26,9 +27,12 @@ const activeWorkers = new Map();
 
 function validateWorkspacePath(targetPath) {
   if (!targetPath) return { ok: true, resolved: FORGE_PROJECTS_ROOT };
+  const allowedRoot = path.resolve(FORGE_PROJECTS_ROOT);
   const resolved = path.resolve(targetPath);
-  if (!resolved.startsWith(FORGE_PROJECTS_ROOT)) {
-    return { ok: false, error: `Acceso denegado: La ruta "${targetPath}" está fuera del workspace FORGE_PROJECTS_ROOT (${FORGE_PROJECTS_ROOT})` };
+  const relative = path.relative(allowedRoot, resolved);
+  const isInside = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  if (!isInside) {
+    return { ok: false, error: `Acceso denegado: La ruta "${targetPath}" está fuera del workspace FORGE_PROJECTS_ROOT (${allowedRoot})` };
   }
   return { ok: true, resolved };
 }
@@ -283,7 +287,7 @@ function ensureUserState() {
       iat: Date.now(),
       exp: Date.now() + 86400000 * 30
     };
-    state.user.sessionSignature = crypto.createHmac('sha256', 'antigravity_secret_key')
+    state.user.sessionSignature = crypto.createHmac('sha256', SERVER_HMAC_SECRET)
       .update(`${state.user.id}:${state.user.sessionToken}`)
       .digest('hex');
   }
@@ -776,16 +780,15 @@ async function api(req, res, url) {
       activePort: PORT,
       worker: state.worker,
       activeWorkerName: activeWorkerObj ? activeWorkerObj.name : null,
-      antigravityAdapter: adapters.antigravity,
-      authenticatedUser: state.user?.name || 'Andres Sanabria',
-      sessionToken: state.user?.sessionToken || null
+      antigravityAdapterStatus: adapters.antigravity.status,
+      antigravityConnected: adapters.antigravity.connected,
+      authenticatedUser: state.user?.name || 'Andres Sanabria'
     });
   }
 
   // GET /api/agents — estado real de cada agente (connected | simulated | disconnected)
   if (req.method === 'GET' && url.pathname === '/api/agents') {
     const activeWorkerObj = Array.from(activeWorkers.values()).find(w => w.status === 'connected');
-    const isAntigravityConnected = adapters.antigravity.connected || Boolean(activeWorkerObj);
 
     const agents = [
       {
@@ -801,12 +804,18 @@ async function api(req, res, url) {
         lastHeartbeat: now()
       },
       {
-        id: 'antigravity', name: 'Antigravity Local Engine', role: 'Executor & Primary Lead',
-        status: isAntigravityConnected ? 'connected' : 'disconnected',
-        adapter: adapters.antigravity.connected ? 'antigravity' : (activeWorkerObj ? 'worker-local' : null),
-        workerName: activeWorkerObj ? activeWorkerObj.name : (state.worker ? state.worker.name : null),
-        endpoint: adapters.antigravity.endpoint,
-        lastHeartbeat: activeWorkerObj ? activeWorkerObj.lastHeartbeat : (state.worker ? state.worker.lastHeartbeat : null)
+        id: 'antigravity-engine', name: 'Antigravity Remote Engine', role: 'Orchestrator Protocol',
+        status: adapters.antigravity.connected ? 'connected' : (adapters.antigravity.url ? 'disconnected' : 'missing_credentials'),
+        adapter: 'antigravity-adapter',
+        endpoint: adapters.antigravity.endpoint || process.env.ANTIGRAVITY_URL || null,
+        lastHeartbeat: adapters.antigravity.lastHealthCheck
+      },
+      {
+        id: 'worker-local', name: 'Worker Local Process', role: 'Executor & Test Runner',
+        status: activeWorkerObj ? 'connected' : 'disconnected',
+        adapter: 'worker-local',
+        workerName: activeWorkerObj ? activeWorkerObj.name : 'worker-local',
+        lastHeartbeat: activeWorkerObj ? activeWorkerObj.lastHeartbeat : null
       },
       {
         id: 'zai-glm', name: 'Z.ai GLM-5.2', role: 'AI Engine',

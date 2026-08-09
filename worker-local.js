@@ -4,7 +4,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const CONTROL_PLANE_URL = process.env.CONTROL_PLANE_URL || 'http://127.0.0.1:4173';
-const FORGE_WORKER_TOKEN = process.env.FORGE_WORKER_TOKEN || 'forge_worker_local_token_sec_4173';
+const FORGE_WORKER_TOKEN = process.env.FORGE_WORKER_TOKEN || 'forge_dev_token_4173';
 const WORKER_NAME = process.env.WORKER_NAME || 'worker-local';
 const WORKER_ID = process.env.WORKER_ID || `worker_mac_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
 const FORGE_PROJECTS_ROOT = process.env.FORGE_PROJECTS_ROOT || path.resolve(__dirname);
