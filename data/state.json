@@ -6,7 +6,16 @@
     "antigravityId": "AGY-MAC-PRO-4173",
     "status": "connected",
     "connectedSince": "2026-08-08T04:26:43.312Z",
-    "role": "Software Architect & Antigravity User"
+    "role": "Software Architect & Antigravity User",
+    "sessionToken": "agy_sess_e3a44589169c917cb0e467cd09023306747679550d8e153c",
+    "sessionClaims": {
+      "iss": "Antigravity Control Plane",
+      "sub": "usr_andres_sanabria",
+      "aud": "Antigravity Local IDE",
+      "iat": 1786304361048,
+      "exp": 1788896361048
+    },
+    "sessionSignature": "64092fa75744d1b9ceeea9f5367f5ce04e71958a103c6f25ae824aa570b8511d"
   },
   "projects": [
     {
@@ -2680,7 +2689,10 @@
   ],
   "worker": {
     "status": "online",
-    "name": "worker-local",
-    "lastHeartbeat": "2026-08-08T04:29:19.629Z"
+    "name": "worker-local-mac-pro",
+    "lastHeartbeat": "2026-08-09T20:13:49.588Z",
+    "pid": 13065,
+    "activePort": 4173,
+    "connected": true
   }
 }

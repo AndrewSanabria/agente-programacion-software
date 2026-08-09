@@ -5,17 +5,39 @@ const crypto = require('node:crypto');
 const https = require('node:https');
 const { execFileSync } = require('node:child_process');
 
+const AntigravityAdapter = require('./antigravity-adapter');
+
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = path.join(ROOT, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const PORT = Number(process.env.PORT || 4173);
 
+const FORGE_WORKER_TOKEN = process.env.FORGE_WORKER_TOKEN || 'forge_worker_local_token_sec_4173';
+const FORGE_PROJECTS_ROOT = path.resolve(process.env.FORGE_PROJECTS_ROOT || ROOT);
+
+const antigravityAdapter = new AntigravityAdapter({
+  url: process.env.ANTIGRAVITY_URL,
+  token: process.env.ANTIGRAVITY_TOKEN
+});
+
+// Map en memoria para registro y heartbeat de workers en tiempo real
+const activeWorkers = new Map();
+
+function validateWorkspacePath(targetPath) {
+  if (!targetPath) return { ok: true, resolved: FORGE_PROJECTS_ROOT };
+  const resolved = path.resolve(targetPath);
+  if (!resolved.startsWith(FORGE_PROJECTS_ROOT)) {
+    return { ok: false, error: `Acceso denegado: La ruta "${targetPath}" está fuera del workspace FORGE_PROJECTS_ROOT (${FORGE_PROJECTS_ROOT})` };
+  }
+  return { ok: true, resolved };
+}
+
 // ===== ADAPTER REGISTRY =====
 const adapters = {
   openai:     { name: 'OpenAI GPT-5.6 Luna', status: 'not_configured', apiKey: null, apiKeyEnv: 'OPENAI_API_KEY', baseUrl: 'https://api.openai.com/v1/', connected: false },
   anthropic:  { name: 'Anthropic Claude', status: 'not_configured', apiKeyEnv: 'ANTHROPIC_API_KEY', connected: false },
-  antigravity:{ name: 'Antigravity Engine', status: 'connected', connected: true, endpoint: `http://127.0.0.1:${PORT}`, connectedAt: new Date().toISOString() },
+  antigravity:{ name: 'Antigravity Engine', status: 'disconnected', connected: false, endpoint: process.env.ANTIGRAVITY_URL || null },
   zai:        { name: 'Z.ai GLM-5.2', status: 'not_configured', apiKey: null, baseUrl: 'https://api.z.ai/api/paas/v4/', connected: false }
 };
 
@@ -29,10 +51,10 @@ function connectAdapter(adapterKey) {
   return true;
 }
 
-function initAdapters() {
-  adapters.antigravity.status = 'connected';
-  adapters.antigravity.connected = true;
-  adapters.antigravity.endpoint = `http://127.0.0.1:${PORT}`;
+async function initAdapters() {
+  const agHealth = await antigravityAdapter.healthCheck();
+  adapters.antigravity.status = agHealth.status;
+  adapters.antigravity.connected = agHealth.connected;
   if (process.env.OPENAI_API_KEY) connectAdapter('openai');
   if (process.env.ANTHROPIC_API_KEY) connectAdapter('anthropic');
   if (process.env.ZAI_API_KEY) connectAdapter('zai');
@@ -265,33 +287,41 @@ function ensureUserState() {
       .update(`${state.user.id}:${state.user.sessionToken}`)
       .digest('hex');
   }
-  if (!state.worker) {
-    state.worker = {
-      status: 'online',
-      name: 'worker-local-mac-pro',
-      pid: process.pid,
-      activePort: PORT,
-      connected: true,
-      lastHeartbeat: now()
-    };
-  }
 }
 ensureUserState();
 
-function startWorkerHeartbeat() {
-  setInterval(() => {
-    if (state.worker) {
-      state.worker.status = 'online';
-      state.worker.name = 'worker-local-mac-pro';
-      state.worker.pid = process.pid;
-      state.worker.activePort = PORT;
-      state.worker.connected = true;
-      state.worker.lastHeartbeat = now();
-      persist();
+function startWorkerExpirationCheck() {
+  const timer = setInterval(() => {
+    const nowTs = Date.now();
+    let changed = false;
+
+    for (const [workerId, worker] of activeWorkers.entries()) {
+      const lastHbTs = Date.parse(worker.lastHeartbeat || 0);
+      if (nowTs - lastHbTs > 8000 && worker.status !== 'disconnected') {
+        worker.status = 'disconnected';
+        worker.connected = false;
+        changed = true;
+        event('error', `Worker desmarcado por pérdida de heartbeat: ${workerId}`);
+      }
     }
-  }, 4000);
+
+    if (state.worker) {
+      const activeWorkerObj = Array.from(activeWorkers.values()).find(w => w.status === 'connected');
+      if (activeWorkerObj) {
+        state.worker.status = 'online';
+        state.worker.name = activeWorkerObj.name;
+        state.worker.antigravityId = activeWorkerObj.workerId;
+        state.worker.lastHeartbeat = activeWorkerObj.lastHeartbeat;
+      } else {
+        state.worker.status = 'offline';
+        state.worker.name = 'worker-local (desconectado)';
+      }
+    }
+    if (changed) persist();
+  }, 3000);
+  if (timer.unref) timer.unref();
 }
-startWorkerHeartbeat();
+startWorkerExpirationCheck();
 
 function persist() { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); }
 function ensureConversationState() {
@@ -623,14 +653,129 @@ function runTask(task) {
 }
 
 async function api(req, res, url) {
-  if (req.method === 'GET' && url.pathname === '/api/health') {
+  // Helper to verify Worker Token
+  function verifyWorkerAuth(reqHeaderToken, bodyToken) {
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.replace(/^Bearer\s+/i, '') || bodyToken || '';
+    return token === FORGE_WORKER_TOKEN;
+  }
+
+  // POST /api/workers/register — Registro autenticado de worker local
+  if (req.method === 'POST' && url.pathname === '/api/workers/register') {
+    const body = await parseBody(req);
+    if (!verifyWorkerAuth(req.headers['authorization'], body.token)) {
+      return json(res, 401, { ok: false, error: 'Token de worker inválido (FORGE_WORKER_TOKEN)' });
+    }
+
+    // Path Jail Check
+    const pathCheck = validateWorkspacePath(body.root);
+    if (!pathCheck.ok) return json(res, 403, { ok: false, error: pathCheck.error });
+
+    const workerId = body.workerId || `worker_${Date.now()}`;
+    const workerObj = {
+      workerId,
+      name: body.name || 'worker-local',
+      pid: body.pid || process.pid,
+      root: pathCheck.resolved,
+      capabilities: body.capabilities || ['review', 'build'],
+      status: 'connected',
+      connected: true,
+      lastHeartbeat: new Date().toISOString(),
+      registeredAt: new Date().toISOString()
+    };
+
+    activeWorkers.set(workerId, workerObj);
+    if (state.worker) {
+      state.worker.status = 'online';
+      state.worker.name = workerObj.name;
+      state.worker.antigravityId = workerId;
+      state.worker.lastHeartbeat = workerObj.lastHeartbeat;
+    }
+    event('success', `Worker local registrado: ${workerObj.name} (${workerId})`);
+    persist();
+
     return json(res, 200, {
       ok: true,
-      status: 'online',
+      status: 'connected',
+      workerId,
+      antigravityId: workerId,
+      workerName: workerObj.name
+    });
+  }
+
+  // POST /api/workers/heartbeat — Heartbeat periódico de worker
+  if (req.method === 'POST' && url.pathname === '/api/workers/heartbeat') {
+    const body = await parseBody(req);
+    if (!verifyWorkerAuth(req.headers['authorization'], body.token)) {
+      return json(res, 401, { ok: false, error: 'Token de worker inválido' });
+    }
+
+    const workerId = body.workerId || req.headers['x-worker-id'];
+    const workerObj = activeWorkers.get(workerId);
+    if (!workerObj) {
+      return json(res, 404, { ok: false, error: 'Worker no registrado' });
+    }
+
+    workerObj.lastHeartbeat = new Date().toISOString();
+    workerObj.status = 'connected';
+    workerObj.connected = true;
+    if (state.worker) {
+      state.worker.status = 'online';
+      state.worker.lastHeartbeat = workerObj.lastHeartbeat;
+    }
+
+    return json(res, 200, { ok: true, status: 'connected', lastHeartbeat: workerObj.lastHeartbeat });
+  }
+
+  // POST /api/workers/poll — Worker obtiene tareas en cola
+  if (req.method === 'POST' && url.pathname === '/api/workers/poll') {
+    const body = await parseBody(req);
+    if (!verifyWorkerAuth(req.headers['authorization'], body.token)) {
+      return json(res, 401, { ok: false, error: 'Token de worker inválido' });
+    }
+
+    const queuedTask = state.tasks.find(t => t.status === 'queued');
+    if (queuedTask) {
+      queuedTask.status = 'running';
+      queuedTask.updatedAt = new Date().toISOString();
+      persist();
+      return json(res, 200, { ok: true, task: queuedTask });
+    }
+    return json(res, 200, { ok: true, task: null });
+  }
+
+  // POST /api/workers/tasks/:id/report — Worker reporta progreso / resultado de tarea
+  const workerReportMatch = url.pathname.match(/^\/api\/workers\/tasks\/([^/]+)\/report$/);
+  if (req.method === 'POST' && workerReportMatch) {
+    const body = await parseBody(req);
+    if (!verifyWorkerAuth(req.headers['authorization'], body.token)) {
+      return json(res, 401, { ok: false, error: 'Token de worker inválido' });
+    }
+
+    const taskId = workerReportMatch[1];
+    const task = state.tasks.find(t => t.id === taskId);
+    if (task) {
+      task.status = body.status || task.status;
+      task.stage = body.stage || task.stage;
+      task.progress = body.progress !== undefined ? body.progress : task.progress;
+      task.result = body.result || task.result;
+      task.updatedAt = new Date().toISOString();
+      event(task.status === 'completed' ? 'success' : task.status === 'failed' ? 'error' : 'agent', `Tarea ${taskId}: ${task.status}`);
+      persist();
+    }
+    return json(res, 200, { ok: true });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/health') {
+    const activeWorkerObj = Array.from(activeWorkers.values()).find(w => w.status === 'connected');
+    return json(res, 200, {
+      ok: true,
+      status: activeWorkerObj ? 'online' : 'offline',
       pid: process.pid,
       uptimeSeconds: process.uptime(),
       activePort: PORT,
       worker: state.worker,
+      activeWorkerName: activeWorkerObj ? activeWorkerObj.name : null,
       antigravityAdapter: adapters.antigravity,
       authenticatedUser: state.user?.name || 'Andres Sanabria',
       sessionToken: state.user?.sessionToken || null
@@ -639,6 +784,9 @@ async function api(req, res, url) {
 
   // GET /api/agents — estado real de cada agente (connected | simulated | disconnected)
   if (req.method === 'GET' && url.pathname === '/api/agents') {
+    const activeWorkerObj = Array.from(activeWorkers.values()).find(w => w.status === 'connected');
+    const isAntigravityConnected = adapters.antigravity.connected || Boolean(activeWorkerObj);
+
     const agents = [
       {
         id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', role: 'Architect',
@@ -654,11 +802,11 @@ async function api(req, res, url) {
       },
       {
         id: 'antigravity', name: 'Antigravity Local Engine', role: 'Executor & Primary Lead',
-        status: adapters.antigravity.connected ? 'connected' : 'disconnected',
-        adapter: 'antigravity',
-        workerName: state.worker.name,
+        status: isAntigravityConnected ? 'connected' : 'disconnected',
+        adapter: adapters.antigravity.connected ? 'antigravity' : (activeWorkerObj ? 'worker-local' : null),
+        workerName: activeWorkerObj ? activeWorkerObj.name : (state.worker ? state.worker.name : null),
         endpoint: adapters.antigravity.endpoint,
-        lastHeartbeat: state.worker.lastHeartbeat
+        lastHeartbeat: activeWorkerObj ? activeWorkerObj.lastHeartbeat : (state.worker ? state.worker.lastHeartbeat : null)
       },
       {
         id: 'zai-glm', name: 'Z.ai GLM-5.2', role: 'AI Engine',
@@ -797,7 +945,7 @@ async function api(req, res, url) {
     const body = await parseBody(req);
     if (!body.title) return json(res, 400, { error: 'El título de la tarea es obligatorio' });
     const task = { id: id('task'), projectId: body.projectId || state.projects[0]?.id, title: body.title, description: body.description || '', status: 'queued', stage: 'queued', priority: body.priority || 'medium', agent: 'GPT Architect', createdAt: now(), updatedAt: now(), progress: 0 };
-    state.tasks.unshift(task); event('task', `Nueva tarea en cola: ${task.title}`); persist(); runTask(task); return json(res, 201, task);
+    state.tasks.unshift(task); event('task', `Nueva tarea en cola: ${task.title}`); persist(); return json(res, 201, task);
   }
   const runMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/run$/);
   if (req.method === 'POST' && runMatch) {
@@ -983,8 +1131,11 @@ async function api(req, res, url) {
 }
 
 function serve(req, res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+
   const url = new URL(req.url, `http://${req.headers.host}`);
-  if (url.pathname.startsWith('/api/')) return api(req, res, url).catch(() => json(res, 400, { error: 'Solicitud inválida' }));
+  if (url.pathname.startsWith('/api/')) return api(req, res, url).catch((err) => json(res, 400, { error: 'Solicitud inválida', details: err.message }));
   const requested = url.pathname === '/' ? '/index.html' : url.pathname;
   const file = path.normalize(path.join(PUBLIC_DIR, requested));
   if (!file.startsWith(PUBLIC_DIR)) return json(res, 403, { error: 'Acceso denegado' });
@@ -995,4 +1146,9 @@ function serve(req, res) {
   });
 }
 
-http.createServer(serve).listen(PORT, () => console.log(`Dashboard listo en http://localhost:${PORT}`));
+const server = http.createServer(serve);
+if (require.main === module) {
+  server.listen(PORT, '127.0.0.1', () => console.log(`Dashboard listo en http://127.0.0.1:${PORT}`));
+}
+
+module.exports = { server, PORT, activeWorkers, FORGE_WORKER_TOKEN, FORGE_PROJECTS_ROOT, validateWorkspacePath };
