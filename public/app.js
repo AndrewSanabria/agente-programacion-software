@@ -202,7 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <p style="font-size:16px;font-weight:600;color:#fff;">Codex Agentic IDE</p>
         <p style="font-size:13px;margin-top:4px;">Proyecto activo: <strong style="color:var(--primary);">${proj ? proj.name : 'Ninguno'}</strong></p>
         <p style="font-size:12.5px;margin-top:10px;max-width:420px;text-align:center;line-height:1.5;">
-          Conversación vacía. Escribe una instrucción abajo para iniciar la orquestación multimodelo (GPT-4o + Claude 3.5 + Antigravity).
+          Conversación vacía. Escribe una instrucción abajo para iniciar la orquestación multimodelo (GPT-5.6 Luna + Claude 3.5 + Antigravity).
         </p>
       </div>
     `;
@@ -326,7 +326,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <!-- REVIEWER REASONING -->
             <div style="font-size:12px;color:var(--text-muted);margin-top:10px;line-height:1.5;background:rgba(0,0,0,0.25);padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);">
               <div style="margin-bottom:6px;">
-                <strong style="color:#a5b4fc;display:block;margin-bottom:2px;">🧠 GPT-4o Architect:</strong>
+                <strong style="color:#a5b4fc;display:block;margin-bottom:2px;">🧠 GPT-5.6 Luna Architect:</strong>
                 <p style="color:var(--text-main);">Revisión completada en modo solo lectura. Se inspeccionaron ${review.inspectedFiles?.length || 0} archivos, ${review.inspectedDocuments?.length || 0} documento(s) y se verificó el estado Git.</p>
               </div>
               <div style="border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
@@ -441,7 +441,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <div class="chat-msg-body">
             <div class="chat-msg-meta"><strong style="color:#a5b4fc;">✨ Antigravity AI (Líder Orquestador)</strong></div>
             <div class="chat-msg-content" style="color:#fbbf24;font-size:13px;padding:8px 0;">
-              <span style="animation:pulse 1.2s infinite;display:inline-block;">🧠 Pensando y coordinando al equipo de agentes (GPT-4o, Claude 3.5, Worker Local)...</span>
+                  <span style="animation:pulse 1.2s infinite;display:inline-block;">🧠 Pensando y coordinando al equipo de agentes (GPT-5.6 Luna, Claude 3.5, Worker Local)...</span>
             </div>
           </div>
         </div>
@@ -537,14 +537,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.ok) return;
       data.agents.forEach(agent => {
         // Mapear IDs del API a IDs de los badges en el HTML
-        const badgeIdMap = { 'gpt-4o': 'gpt', 'claude-3.5': 'claude', 'antigravity': 'antigravity', 'zai-glm': 'zai-glm' };
+        const badgeIdMap = { 'gpt-5.6-luna': 'gpt', 'claude-3.5': 'claude', 'antigravity': 'antigravity', 'zai-glm': 'zai-glm' };
         const badgeKey = badgeIdMap[agent.id] || agent.id;
         const badge = document.getElementById(`agent-badge-${badgeKey}`);
         if (!badge) return;
         const icon = agent.status === 'connected' ? '🟢'
                    : agent.status === 'simulated' ? '🟡'
                    : '🔴';
-        const label = agent.id === 'gpt-4o' ? `🧠 GPT-4o (Arquitecto) ${icon}`
+        const label = agent.id === 'gpt-5.6-luna' ? `🧠 GPT-5.6 Luna (Arquitecto) ${icon}`
                     : agent.id === 'claude-3.5' ? `🛡️ Claude 3.5 (Revisor) ${icon}`
                     : agent.id === 'zai-glm' ? `🤖 Z.ai GLM-5.2 ${icon}`
                     : `✨ Antigravity (Líder) ${icon}`;
@@ -566,17 +566,47 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch { /* silently fail — la UI muestra el último estado conocido */ }
   }
 
-  // ===== Z.AI CONFIG MODAL =====
+  // ===== API KEYS CONFIG MODAL (OpenAI + Z.ai) =====
   const zaiModal = document.getElementById('zai-config-modal');
   const zaiApiKeyInput = document.getElementById('zai-api-key-input');
   const zaiConfigStatus = document.getElementById('zai-config-status');
   const zaiConnectBtn = document.getElementById('zai-connect-btn');
   const zaiDisconnectBtn = document.getElementById('zai-disconnect-btn');
+  const openaiApiKeyInput = document.getElementById('openai-api-key-input');
+  const openaiConfigStatus = document.getElementById('openai-config-status');
+  const openaiConnectBtn = document.getElementById('openai-connect-btn');
+  const openaiDisconnectBtn = document.getElementById('openai-disconnect-btn');
+
+  // Tab switching
+  document.querySelectorAll('.modal-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.modal-tab-content').forEach(c => c.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    });
+  });
 
   if (document.getElementById('btn-settings')) {
     document.getElementById('btn-settings').addEventListener('click', () => {
       zaiModal.style.display = 'flex';
       fetch('/api/agents').then(r => r.json()).then(data => {
+        // Load OpenAI status
+        const openai = data.agents?.find(a => a.id === 'gpt-5.6-luna');
+        if (openai?.status === 'connected') {
+          openaiApiKeyInput.value = '••••••••••••••••';
+          openaiDisconnectBtn.style.display = 'inline-block';
+          openaiConnectBtn.textContent = 'Actualizar';
+          openaiConfigStatus.textContent = '🟢 Conectado';
+          openaiConfigStatus.style.color = 'var(--success)';
+        } else {
+          openaiApiKeyInput.value = '';
+          openaiDisconnectBtn.style.display = 'none';
+          openaiConnectBtn.textContent = 'Conectar';
+          openaiConfigStatus.textContent = openai?.status === 'auth_error' ? '🔴 Error de autenticación' : '⚠️ No configurado';
+          openaiConfigStatus.style.color = openai?.status === 'auth_error' ? 'var(--danger)' : 'var(--text-dim)';
+        }
+        // Load Z.ai status
         const zai = data.agents?.find(a => a.id === 'zai-glm');
         if (zai?.status === 'connected') {
           zaiApiKeyInput.value = '••••••••••••';
@@ -598,6 +628,45 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('zai-modal-close').addEventListener('click', () => zaiModal.style.display = 'none');
   zaiModal.addEventListener('click', (e) => { if (e.target === zaiModal) zaiModal.style.display = 'none'; });
 
+  // ===== OpenAI connect / disconnect =====
+  openaiConnectBtn.addEventListener('click', async () => {
+    const key = openaiApiKeyInput.value.trim();
+    if (!key || key === '••••••••••••••••') { openaiConfigStatus.textContent = '⚠️ Ingresa una API Key'; return; }
+    openaiConfigStatus.textContent = '⏳ Conectando...';
+    openaiConnectBtn.disabled = true;
+    try {
+      const res = await fetch('/api/adapters/openai/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: key })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        openaiConfigStatus.textContent = '🟢 Conectado exitosamente';
+        openaiConfigStatus.style.color = 'var(--success)';
+        openaiDisconnectBtn.style.display = 'inline-block';
+        openaiApiKeyInput.value = '••••••••••••••••';
+        openaiConnectBtn.textContent = 'Actualizar';
+        fetchAgentStatus();
+      } else {
+        openaiConfigStatus.textContent = `🔴 ${data.error}`;
+        openaiConfigStatus.style.color = 'var(--danger)';
+      }
+    } catch { openaiConfigStatus.textContent = '🔴 Error de conexión'; openaiConfigStatus.style.color = 'var(--danger)'; }
+    openaiConnectBtn.disabled = false;
+  });
+
+  openaiDisconnectBtn.addEventListener('click', async () => {
+    await fetch('/api/adapters/openai/configure', { method: 'DELETE' });
+    openaiConfigStatus.textContent = '⚠️ Desconectado';
+    openaiConfigStatus.style.color = 'var(--text-dim)';
+    openaiDisconnectBtn.style.display = 'none';
+    openaiApiKeyInput.value = '';
+    openaiConnectBtn.textContent = 'Conectar';
+    fetchAgentStatus();
+  });
+
+  // ===== Z.ai connect / disconnect =====
   zaiConnectBtn.addEventListener('click', async () => {
     const key = zaiApiKeyInput.value.trim();
     if (!key || key === '••••••••••••') { zaiConfigStatus.textContent = '⚠️ Ingresa una API Key'; return; }

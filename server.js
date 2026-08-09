@@ -15,7 +15,7 @@ const PORT = Number(process.env.PORT || 4173);
 // Los adaptadores permanecen inactivos hasta que se configuren credenciales.
 // Ninguno conecta a producción ni lee secretos del repositorio (AGENTS.md).
 const adapters = {
-  openai:     { name: 'OpenAI GPT-4o',    status: 'not_configured', apiKeyEnv: 'OPENAI_API_KEY',     connected: false },
+  openai:     { name: 'OpenAI GPT-5.6 Luna', status: 'not_configured', apiKey: null, apiKeyEnv: 'OPENAI_API_KEY', baseUrl: 'https://api.openai.com/v1/', connected: false },
   anthropic:  { name: 'Anthropic Claude', status: 'not_configured', apiKeyEnv: 'ANTHROPIC_API_KEY',  connected: false },
   antigravity:{ name: 'Antigravity',      status: 'not_configured', endpointEnv: 'ANTIGRAVITY_URL',  connected: false },
   zai:        { name: 'Z.ai GLM-5.2',    status: 'not_configured', apiKey: null, baseUrl: 'https://api.z.ai/api/paas/v4/', connected: false }
@@ -65,7 +65,15 @@ function callZaiApi(messages) {
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
+          if (res.statusCode >= 400) {
+            let errMsg;
+            try { errMsg = JSON.parse(data); } catch (_) { errMsg = { error: { message: data.slice(0, 300) } }; }
+            console.error(`[Z.ai] HTTP ${res.statusCode}:`, JSON.stringify(errMsg));
+            reject(new Error(`HTTP ${res.statusCode}: ${errMsg.error?.message || data.slice(0, 300)}`));
+            return;
+          }
           const json = JSON.parse(data);
+          console.log('[Z.ai] Response OK, model:', json.model || 'unknown');
           if (json.choices && json.choices[0]) {
             resolve(json.choices[0].message.content);
           } else {
@@ -75,8 +83,91 @@ function callZaiApi(messages) {
       });
     });
 
-    req.on('error', reject);
+    req.on('error', (e) => { console.error('[Z.ai] Network error:', e.message); reject(e); });
     req.setTimeout(30000, () => { req.destroy(); reject(new Error('Timeout: Z.ai no respondió en 30s')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ===== OPENAI GPT-5.6 Luna API CALLER (node:https, zero dependencies) =====
+// GPT-5.6 usa el endpoint /v1/responses. El system prompt va como
+// role:"developer" dentro del array "input". La respuesta viene en
+// output[].content[].text donde el item tiene type==="message".
+function callOpenAiApi(messages) {
+  const a = adapters.openai;
+  if (!a || !a.apiKey || !a.connected) return Promise.resolve(null);
+
+  return new Promise((resolve, reject) => {
+    // Responses API: system prompt → role "developer" dentro de "input"
+    const systemMsg = messages.find(m => m.role === 'system');
+    const chatMessages = messages.filter(m => m.role !== 'system');
+    const input = [];
+    if (systemMsg) input.push({ role: 'developer', content: systemMsg.content });
+    if (chatMessages.length > 0) input.push(...chatMessages);
+    if (input.length === 0) input.push({ role: 'user', content: 'ping' });
+
+    const payload = JSON.stringify({
+      model: 'gpt-5.6-luna',
+      input,
+      temperature: 0.7,
+      max_output_tokens: 2048
+    });
+
+    const url = new URL(a.baseUrl + 'responses');
+    const options = {
+      hostname: url.hostname,
+      port: 443,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'Authorization': `Bearer ${a.apiKey}`
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          if (res.statusCode >= 400) {
+            let errMsg;
+            try { errMsg = JSON.parse(data); } catch (_) { errMsg = { error: { message: data.slice(0, 300) } }; }
+            console.error(`[OpenAI] HTTP ${res.statusCode}:`, JSON.stringify(errMsg));
+            reject(new Error(`HTTP ${res.statusCode}: ${errMsg.error?.message || data.slice(0, 300)}`));
+            return;
+          }
+          const json = JSON.parse(data);
+          console.log('[OpenAI] Response OK, output types:', (json.output || []).map(o => o.type));
+          // Responses API: output[] → buscar type==='message' → content[]
+          const msgItem = (json.output || []).find(o => o.type === 'message');
+          if (msgItem && msgItem.content && msgItem.content.length > 0) {
+            const textParts = msgItem.content
+              .filter(c => c.type === 'output_text' || c.type === 'text')
+              .map(c => c.text);
+            if (textParts.length > 0) {
+              resolve(textParts.join('\n'));
+              return;
+            }
+          }
+          // Fallback: buscar cualquier campo "text" en output
+          const fallbackText = (json.output || [])
+            .filter(o => o.type === 'message' || o.type === 'output_text')
+            .map(o => o.content || o.text || '')
+            .join('\n');
+          if (fallbackText.trim()) { resolve(fallbackText.trim()); return; }
+          reject(new Error(json.error?.message || 'Respuesta inesperada de OpenAI (formato Responses API)'));
+        } catch (e) {
+          console.error('[OpenAI] Parse error:', e.message, 'Raw:', data.slice(0, 200));
+          reject(e);
+        }
+      });
+    });
+
+    req.on('error', (e) => { console.error('[OpenAI] Network error:', e.message); reject(e); });
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Timeout: OpenAI no respondió en 30s')); });
     req.write(payload);
     req.end();
   });
@@ -325,7 +416,7 @@ function createRunForMessage(conversationId, messageId, text, result) {
   return run;
 }
 
-async function chatAnswer(text, project) {
+async function chatAnswer(text, project, selectedModel) {
   const request = String(text || '').trim();
   const normalized = request.toLowerCase();
   const proj = project || state.projects[0] || { name: 'agente de programacion software', githubUrl: 'https://github.com/AndrewSanabria/agente-programacion-software.git', branch: 'main' };
@@ -335,8 +426,30 @@ async function chatAnswer(text, project) {
 
   if (!request) return { type: 'error', text: 'Escribe una solicitud para comenzar.' };
 
-  // Si Z.ai está conectado, delegar la consulta al modelo GLM-5.2
-  if (adapters.zai.connected && adapters.zai.apiKey) {
+  const modelLower = String(selectedModel || '').toLowerCase();
+  const useOpenAi = modelLower.includes('gpt-5.6') || modelLower.includes('gpt-5.5') || modelLower.includes('gpt-4o') || modelLower.includes('openai');
+  const useZai = !useOpenAi;
+
+  // Si OpenAI GPT-5.6 Luna está seleccionado y conectado, delegar la consulta
+  if (useOpenAi && adapters.openai.connected && adapters.openai.apiKey) {
+    try {
+      const systemPrompt = `Eres GPT-5.6 Luna, un arquitecto de software experto que trabaja dentro del ecosistema Antigravity AI.
+Proyecto actual: ${proj.name}. Rama: ${proj.branch || 'main'}.
+Usuario: ${userName} (@${userHandle}).
+Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar o auditar, analiza el contexto del proyecto.`;
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: text }
+      ];
+      const aiResponse = await callOpenAiApi(messages);
+      if (aiResponse) return { type: 'answer', text: aiResponse };
+    } catch (err) {
+      event('error', `OpenAI error: ${err.message}`);
+    }
+  }
+
+  // Si Z.ai está conectado (o es el modelo seleccionado por defecto), delegar al modelo GLM-5.2
+  if (useZai && adapters.zai.connected && adapters.zai.apiKey) {
     try {
       const systemPrompt = `Eres Antigravity AI, un orquestador de agentes de ingeniería de software.
 Proyecto actual: ${proj.name}. Rama: ${proj.branch || 'main'}.
@@ -349,14 +462,13 @@ Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar
       const aiResponse = await callZaiApi(messages);
       if (aiResponse) return { type: 'answer', text: aiResponse };
     } catch (err) {
-      // Fallback silencioso a respuestas locales si Z.ai falla
       event('error', `Z.ai error: ${err.message}`);
     }
   }
 
   // 1. GREETINGS
   if (/\b(hola|buen[ao]s|saludos|hey|hi|hello)\b/i.test(normalized)) {
-    const answer = `👋 **¡Hola, ${userName}!** Soy **✨ Antigravity AI (Líder Orquestador)**.\n\nEstoy conectado a tu proyecto **${proj.name}** en GitHub ([@${userHandle}](${githubUrl})).\n\n**¿En qué trabajamos hoy?** Puedo:\n• 🔍 **Revisar y auditar tu repositorio** en busca de fallos o mejoras de seguridad.\n• 🧠 **Diseñar la arquitectura** para una nueva funcionalidad con **GPT-4o**.\n• 🛡️ **Evaluar riesgos OWASP** con **Claude 3.5**.\n• ⚡ **Ejecutar código y pruebas** en tu Worker Local aislado.`;
+    const answer = `👋 **¡Hola, ${userName}!** Soy **✨ Antigravity AI (Líder Orquestador)**.\n\nEstoy conectado a tu proyecto **${proj.name}** en GitHub ([@${userHandle}](${githubUrl})).\n\n**¿En qué trabajamos hoy?** Puedo:\n• 🔍 **Revisar y auditar tu repositorio** en busca de fallos o mejoras de seguridad.\n• 🧠 **Diseñar la arquitectura** para una nueva funcionalidad con **GPT-5.6 Luna**.\n• 🛡️ **Evaluar riesgos OWASP** con **Claude 3.5**.\n• ⚡ **Ejecutar código y pruebas** en tu Worker Local aislado.`;
     return { type: 'answer', text: answer };
   }
 
@@ -381,7 +493,7 @@ Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar
     const answer = [
       `✨ **Antigravity AI Engine (Líder Orquestador)**: He procesado tu solicitud de revisión para **${review.project}**.`,
       `Coordiné al equipo de agentes:`,
-      `• 🧠 **GPT-4o Architect**: Inspeccionó ${review.inspectedFiles.length} archivos en la rama \`${review.git.branch}\`.`,
+      `• 🧠 **GPT-5.6 Luna Architect**: Inspeccionó ${review.inspectedFiles.length} archivos en la rama \`${review.git.branch}\`.`,
       `• 🛡️ **Claude 3.5 Reviewer**: Evaluó permisos y seguridad. Encontró ${review.findings.length} hallazgo(s) (${high.length} prioritarios).`,
       `• ⚡ **Worker Local / Antigravity Executor**: Ejecutó la inspección directa y pruebas (${testText}).`,
       `Árbol principal intacto y listo para operar.`
@@ -391,7 +503,7 @@ Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar
 
   // 4. HELP & CAPABILITIES
   if (/\b(qué puedes|que puedes|ayuda|help|cómo funciona|como funciona)\b/i.test(normalized)) {
-    return { type: 'answer', text: `✨ **Antigravity AI (Líder Orquestador)**: Recibo tus instrucciones en el chat, diseño el plan de ingeniería y delego tareas a **GPT-4o** (Arquitectura) y **Claude 3.5** (Seguridad), mientras ejecuto los cambios y pruebas de forma aislada en el Worker Local de tu Mac.` };
+    return { type: 'answer', text: `✨ **Antigravity AI (Líder Orquestador)**: Recibo tus instrucciones en el chat, diseño el plan de ingeniería y delego tareas a **GPT-5.6 Luna** (Arquitectura) y **Claude 3.5** (Seguridad), mientras ejecuto los cambios y pruebas de forma aislada en el Worker Local de tu Mac.` };
   }
 
   // 5. BUILD & IMPLEMENTATION
@@ -400,7 +512,7 @@ Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar
     const answer = [
       `✨ **Antigravity AI Engine (Líder Orquestador)**: Recibí la instrucción de ingeniería: "${request}".`,
       `He delegado la tarea al equipo de agentes:`,
-      `• 🧠 **GPT-4o Architect**: Diseñando la estructura modular y componentes desacoplados.`,
+      `• 🧠 **GPT-5.6 Luna Architect**: Diseñando la estructura modular y componentes desacoplados.`,
       `• 🛡️ **Claude 3.5 Reviewer**: Auditando riesgos OWASP, permisos y sanitización de datos.`,
       `• 🚀 **Antigravity Executor**: Preparando el entorno de trabajo en la rama \`.forge/worktrees/\` para ejecutar los cambios de código y suites de prueba.`
     ].join('\n\n');
@@ -415,7 +527,7 @@ Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar
     `✨ **Antigravity AI Engine (Líder Orquestador)**: Ejecuté el análisis para tu instrucción: "${request}".`,
     `📊 **Diagnóstico del Repositorio ${review.project}** (\`${review.git?.branch || 'main'}\`):`,
     `• Archivos inspeccionados: ${review.inspectedFiles?.length || 12} archivos de código y configuración.`,
-    `• 🧠 **GPT-4o Architect**: Evaluación de dependencias y desacoplamiento de capas OK.`,
+    `• 🧠 **GPT-5.6 Luna Architect**: Evaluación de dependencias y desacoplamiento de capas OK.`,
     `• 🛡️ **Claude 3.5 Reviewer**: Auditoría de permisos y seguridad (${review.findings?.length || 0} hallazgos, ${high.length} críticos).`,
     `• ⚡ **Worker Local**: Inspección directa en tu Mac (${testText}).`,
     `Árbol de trabajo listo para recibir instrucciones de modificación o desarrollo.`
@@ -456,7 +568,7 @@ async function api(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/agents') {
     const agents = [
       {
-        id: 'gpt-4o', name: 'GPT-4o', role: 'Architect',
+        id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', role: 'Architect',
         status: adapters.openai.connected ? 'connected' : 'simulated',
         adapter: adapters.openai.connected ? 'openai' : null,
         lastHeartbeat: now()
@@ -549,8 +661,9 @@ async function api(req, res, url) {
     const text = String(body.content || '').trim();
     if (!text) return json(res, 400, { ok: false, error: 'El mensaje no puede estar vacío' });
     const project = state.projects.find(p => p.id === conversation.projectId) || state.projects[0];
+    const selectedModel = String(body.architectModel || '');
     const userMessage = { id: id('msg'), conversationId: conversation.id, role: 'user', content: text, createdAt: now() };
-    const result = await chatAnswer(text, project);
+    const result = await chatAnswer(text, project, selectedModel);
     const assistantMessage = { id: id('msg'), conversationId: conversation.id, role: 'assistant', content: result.text, kind: result.type, review: result.review || null, createdAt: now() };
     state.messages.push(userMessage, assistantMessage);
     const run = createRunForMessage(conversation.id, assistantMessage.id, text, result);
@@ -592,7 +705,8 @@ async function api(req, res, url) {
     const conversation = conversationFor(body);
     const project = state.projects.find(item => item.id === conversation.projectId) || state.projects[0];
     const userMessage = { id: id('msg'), conversationId: conversation.id, role: 'user', content: text, createdAt: now() };
-    const result = await chatAnswer(text, project);
+    const selectedModel = String(body.model || body.architectModel || '');
+    const result = await chatAnswer(text, project, selectedModel);
     const assistantMessage = { id: id('msg'), conversationId: conversation.id, role: 'assistant', content: result.text, kind: result.type, review: result.review || null, createdAt: now() };
     state.messages.push(userMessage, assistantMessage);
     const run = createRunForMessage(conversation.id, assistantMessage.id, text, result);
@@ -682,6 +796,83 @@ async function api(req, res, url) {
     return json(res, 200, { ok: true, run });
   }
 
+  // POST /api/adapters/openai/configure — connect OpenAI with API key
+  if (req.method === 'POST' && url.pathname === '/api/adapters/openai/configure') {
+    const body = await parseBody(req);
+    const apiKey = String(body.apiKey || '').trim();
+    if (!apiKey) return json(res, 400, { ok: false, error: 'API Key requerida' });
+
+    adapters.openai.apiKey = apiKey;
+    adapters.openai.status = 'connected';
+    adapters.openai.connected = true;
+
+    try {
+      await callOpenAiApi([{ role: 'user', content: 'ping' }]);
+      event('success', 'OpenAI GPT-5.6 Luna conectado exitosamente');
+      persist();
+      return json(res, 200, { ok: true, adapter: { name: adapters.openai.name, status: 'connected', connected: true } });
+    } catch (err) {
+      adapters.openai.status = 'auth_error';
+      adapters.openai.connected = false;
+      adapters.openai.apiKey = null;
+      event('error', `OpenAI auth falló: ${err.message}`);
+      persist();
+      return json(res, 200, { ok: false, error: err.message, adapter: { name: adapters.openai.name, status: 'auth_error', connected: false } });
+    }
+  }
+
+  // DELETE /api/adapters/openai/configure — disconnect OpenAI
+  if (req.method === 'DELETE' && url.pathname === '/api/adapters/openai/configure') {
+    adapters.openai.apiKey = null;
+    adapters.openai.status = 'not_configured';
+    adapters.openai.connected = false;
+    event('agent', 'OpenAI GPT-5.6 Luna desconectado');
+    persist();
+    return json(res, 200, { ok: true, adapter: { name: adapters.openai.name, status: 'not_configured', connected: false } });
+  }
+
+  // GET /api/adapters/openai/debug — test OpenAI connection and return raw response
+  if (req.method === 'GET' && url.pathname === '/api/adapters/openai/debug') {
+    if (!adapters.openai.apiKey) {
+      return json(res, 200, { ok: false, error: 'No hay API Key configurada', adapter: { status: adapters.openai.status } });
+    }
+    const debugResult = { ok: false, adapter: { status: adapters.openai.status, connected: adapters.openai.connected, model: 'gpt-5.6-luna', endpoint: 'https://api.openai.com/v1/responses' } };
+    try {
+      // Hacer un test call y capturar la respuesta raw
+      const result = await new Promise((resolve, reject) => {
+        const payload = JSON.stringify({ model: 'gpt-5.6-luna', input: 'Say "hello" in one word.', max_output_tokens: 50 });
+        const url = new URL(adapters.openai.baseUrl + 'responses');
+        const options = {
+          hostname: url.hostname, port: 443, path: url.pathname, method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'Authorization': `Bearer ${adapters.openai.apiKey}` }
+        };
+        const req = https.request(options, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(data);
+              resolve({ statusCode: res.statusCode, body: json, rawLength: data.length });
+            } catch (e) {
+              resolve({ statusCode: res.statusCode, body: null, raw: data.slice(0, 500) });
+            }
+          });
+        });
+        req.on('error', (e) => reject(e));
+        req.setTimeout(30000, () => { req.destroy(); reject(new Error('Timeout 30s')); });
+        req.write(payload);
+        req.end();
+      });
+      debugResult.httpStatus = result.statusCode;
+      debugResult.responseBody = result.body;
+      if (result.raw) debugResult.rawResponse = result.raw;
+      debugResult.ok = result.statusCode >= 200 && result.statusCode < 300;
+    } catch (err) {
+      debugResult.error = err.message;
+    }
+    return json(res, 200, debugResult);
+  }
+
   // POST /api/adapters/zai/configure — connect Z.ai with API key
   if (req.method === 'POST' && url.pathname === '/api/adapters/zai/configure') {
     const body = await parseBody(req);
@@ -695,14 +886,16 @@ async function api(req, res, url) {
     try {
       await callZaiApi([{ role: 'user', content: 'ping' }]);
       event('success', 'Z.ai GLM-5.2 conectado exitosamente');
+      persist();
+      return json(res, 200, { ok: true, adapter: { name: adapters.zai.name, status: 'connected', connected: true } });
     } catch (err) {
       adapters.zai.status = 'auth_error';
       adapters.zai.connected = false;
+      adapters.zai.apiKey = null;
       event('error', `Z.ai auth falló: ${err.message}`);
+      persist();
+      return json(res, 200, { ok: false, error: err.message, adapter: { name: adapters.zai.name, status: 'auth_error', connected: false } });
     }
-
-    persist();
-    return json(res, 200, { ok: true, adapter: { name: adapters.zai.name, status: adapters.zai.status, connected: adapters.zai.connected } });
   }
 
   // DELETE /api/adapters/zai/configure — disconnect Z.ai
