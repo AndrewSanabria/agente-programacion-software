@@ -22,6 +22,21 @@ Servidor y worker comparten automáticamente el token privado `data/.worker-toke
 También puedes proporcionar un token explícito con `FORGE_WORKER_TOKEN`; no uses tokens
 hardcodeados en el código.
 
+## Conectar OpenAI
+
+La clave se mantiene solo en memoria del servidor y nunca se guarda en `data/state.json`.
+Puedes configurarla desde el botón de ajustes del dashboard o antes de arrancar:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export OPENAI_MODEL="gpt-5.6-luna"
+npm run dev
+```
+
+El servidor valida la clave contra `GET /v1/models` y usa la Responses API para el chat.
+Para pruebas locales se puede cambiar el endpoint con `OPENAI_BASE_URL`; no se debe enviar
+la clave directamente desde el navegador a OpenAI.
+
 ## Qué incluye esta primera versión
 
 - Dashboard responsive con resumen, tareas, proyectos y actividad.

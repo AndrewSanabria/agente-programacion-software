@@ -56,7 +56,7 @@ function validateWorkspacePath(targetPath) {
 
 // ===== ADAPTER REGISTRY =====
 const adapters = {
-  openai:     { name: 'OpenAI GPT-5.6 Luna', status: 'not_configured', apiKey: null, apiKeyEnv: 'OPENAI_API_KEY', baseUrl: 'https://api.openai.com/v1/', connected: false },
+  openai:     { name: 'OpenAI Responses API', status: process.env.OPENAI_API_KEY ? 'checking' : 'missing_credentials', apiKey: process.env.OPENAI_API_KEY || null, apiKeyEnv: 'OPENAI_API_KEY', baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/', model: process.env.OPENAI_MODEL || 'gpt-5.6-luna', reasoningEffort: process.env.OPENAI_REASONING_EFFORT || 'low', connected: false, lastHealthCheck: null, lastError: null },
   anthropic:  { name: 'Anthropic Claude', status: 'not_configured', apiKeyEnv: 'ANTHROPIC_API_KEY', connected: false },
   antigravity:{ name: 'Antigravity Engine', status: process.env.ANTIGRAVITY_URL ? 'disconnected' : 'missing_credentials', connected: false, url: process.env.ANTIGRAVITY_URL || null, endpoint: process.env.ANTIGRAVITY_URL || null, lastHealthCheck: null, lastError: null },
   zai:        { name: 'Z.ai GLM-5.2', status: 'not_configured', apiKey: null, baseUrl: 'https://api.z.ai/api/paas/v4/', connected: false }
@@ -78,7 +78,7 @@ async function initAdapters() {
   adapters.antigravity.connected = agHealth.connected;
   adapters.antigravity.lastHealthCheck = antigravityAdapter.lastHealthCheck;
   adapters.antigravity.lastError = antigravityAdapter.lastError;
-  if (process.env.OPENAI_API_KEY) connectAdapter('openai');
+  if (adapters.openai.apiKey) await checkOpenAiConnection();
   if (process.env.ANTHROPIC_API_KEY) connectAdapter('anthropic');
   if (process.env.ZAI_API_KEY) connectAdapter('zai');
 }
@@ -142,87 +142,115 @@ function callZaiApi(messages) {
   });
 }
 
-// ===== OPENAI GPT-5.6 Luna API CALLER (node:https, zero dependencies) =====
-// GPT-5.6 usa el endpoint /v1/responses. El system prompt va como
-// role:"developer" dentro del array "input". La respuesta viene en
-// output[].content[].text donde el item tiene type==="message".
-function callOpenAiApi(messages) {
-  const a = adapters.openai;
-  if (!a || !a.apiKey || !a.connected) return Promise.resolve(null);
-
+// ===== OPENAI RESPONSES API (HTTP directo, sin persistir la API key) =====
+function openAiRequest(method, endpoint, body = null, apiKey = adapters.openai.apiKey, timeout = 30000) {
   return new Promise((resolve, reject) => {
-    // Responses API: system prompt → role "developer" dentro de "input"
-    const systemMsg = messages.find(m => m.role === 'system');
-    const chatMessages = messages.filter(m => m.role !== 'system');
-    const input = [];
-    if (systemMsg) input.push({ role: 'developer', content: systemMsg.content });
-    if (chatMessages.length > 0) input.push(...chatMessages);
-    if (input.length === 0) input.push({ role: 'user', content: 'ping' });
-
-    const payload = JSON.stringify({
-      model: 'gpt-5.6-luna',
-      input,
-      temperature: 0.7,
-      max_output_tokens: 2048
-    });
-
-    const url = new URL(a.baseUrl + 'responses');
-    const options = {
-      hostname: url.hostname,
-      port: 443,
-      path: url.pathname,
-      method: 'POST',
+    let base;
+    try { base = new URL(adapters.openai.baseUrl); }
+    catch (error) { reject(new Error(`OPENAI_BASE_URL inválida: ${error.message}`)); return; }
+    const requestModule = base.protocol === 'https:' ? https : http;
+    const basePath = base.pathname.replace(/\/$/, '');
+    const requestPath = `${basePath}/${String(endpoint).replace(/^\//, '')}`;
+    const payload = body === null ? null : JSON.stringify(body);
+    const req = requestModule.request({
+      hostname: base.hostname,
+      port: base.port || (base.protocol === 'https:' ? 443 : 80),
+      path: requestPath,
+      method,
       headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload),
-        'Authorization': `Bearer ${a.apiKey}`
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
+        Accept: 'application/json',
+        ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+      },
+      timeout
+    }, res => {
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { raw += chunk; });
       res.on('end', () => {
-        try {
-          if (res.statusCode >= 400) {
-            let errMsg;
-            try { errMsg = JSON.parse(data); } catch (_) { errMsg = { error: { message: data.slice(0, 300) } }; }
-            console.error(`[OpenAI] HTTP ${res.statusCode}:`, JSON.stringify(errMsg));
-            reject(new Error(`HTTP ${res.statusCode}: ${errMsg.error?.message || data.slice(0, 300)}`));
-            return;
-          }
-          const json = JSON.parse(data);
-          console.log('[OpenAI] Response OK, output types:', (json.output || []).map(o => o.type));
-          // Responses API: output[] → buscar type==='message' → content[]
-          const msgItem = (json.output || []).find(o => o.type === 'message');
-          if (msgItem && msgItem.content && msgItem.content.length > 0) {
-            const textParts = msgItem.content
-              .filter(c => c.type === 'output_text' || c.type === 'text')
-              .map(c => c.text);
-            if (textParts.length > 0) {
-              resolve(textParts.join('\n'));
-              return;
-            }
-          }
-          // Fallback: buscar cualquier campo "text" en output
-          const fallbackText = (json.output || [])
-            .filter(o => o.type === 'message' || o.type === 'output_text')
-            .map(o => o.content || o.text || '')
-            .join('\n');
-          if (fallbackText.trim()) { resolve(fallbackText.trim()); return; }
-          reject(new Error(json.error?.message || 'Respuesta inesperada de OpenAI (formato Responses API)'));
-        } catch (e) {
-          console.error('[OpenAI] Parse error:', e.message, 'Raw:', data.slice(0, 200));
-          reject(e);
-        }
+        let jsonBody = {};
+        try { jsonBody = raw ? JSON.parse(raw) : {}; } catch (_) { jsonBody = { raw: raw.slice(0, 500) }; }
+        resolve({ statusCode: res.statusCode || 0, headers: res.headers, body: jsonBody });
       });
     });
-
-    req.on('error', (e) => { console.error('[OpenAI] Network error:', e.message); reject(e); });
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Timeout: OpenAI no respondió en 30s')); });
-    req.write(payload);
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('Timeout: OpenAI no respondió en 30s')));
+    if (payload) req.write(payload);
     req.end();
   });
+}
+
+function openAiError(response) {
+  const message = response.body?.error?.message || response.body?.message || `HTTP ${response.statusCode}`;
+  const error = new Error(`OpenAI ${response.statusCode}: ${String(message).slice(0, 300)}`);
+  error.statusCode = response.statusCode;
+  return error;
+}
+
+async function checkOpenAiConnection() {
+  const a = adapters.openai;
+  if (!a.apiKey) {
+    a.status = 'missing_credentials';
+    a.connected = false;
+    a.lastError = 'OPENAI_API_KEY no configurada';
+    return { ok: false, status: a.status, connected: false };
+  }
+  try {
+    const response = await openAiRequest('GET', 'models', null, a.apiKey, 10000);
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      a.status = 'connected';
+      a.connected = true;
+      a.lastHealthCheck = now();
+      a.lastError = null;
+      return { ok: true, status: a.status, connected: true };
+    }
+    throw openAiError(response);
+  } catch (error) {
+    a.status = error.statusCode === 401 || error.statusCode === 403 ? 'auth_error' : 'disconnected';
+    a.connected = false;
+    a.lastError = error.message;
+    return { ok: false, status: a.status, connected: false, error: error.message };
+  }
+}
+
+function publicOpenAiAdapter() {
+  const { apiKey, ...safe } = adapters.openai;
+  return { ...safe, configured: Boolean(apiKey) };
+}
+
+function responseText(body) {
+  if (typeof body?.output_text === 'string' && body.output_text.trim()) return body.output_text.trim();
+  const parts = [];
+  for (const item of body?.output || []) {
+    for (const content of item.content || []) {
+      if (typeof content.text === 'string') parts.push(content.text);
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+async function callOpenAiApi(messages) {
+  const a = adapters.openai;
+  if (!a || !a.apiKey || !a.connected) return null;
+  const systemMsg = messages.find(m => m.role === 'system');
+  const chatMessages = messages.filter(m => m.role !== 'system');
+  const input = [];
+  if (systemMsg) input.push({ role: 'developer', content: systemMsg.content });
+  input.push(...chatMessages);
+  if (input.length === 0) input.push({ role: 'user', content: 'ping' });
+  const payload = {
+    model: a.model,
+    input,
+    max_output_tokens: 2048,
+    store: false,
+    text: { verbosity: 'medium' }
+  };
+  if (/^gpt-5/i.test(a.model)) payload.reasoning = { effort: a.reasoningEffort };
+  const response = await openAiRequest('POST', 'responses', payload, a.apiKey);
+  if (response.statusCode < 200 || response.statusCode >= 300) throw openAiError(response);
+  const text = responseText(response.body);
+  if (!text) throw new Error('OpenAI devolvió una respuesta sin texto');
+  return text;
 }
 
 const now = () => new Date().toISOString();
@@ -569,10 +597,14 @@ async function chatAnswer(text, project, selectedModel) {
   if (!request) return { type: 'error', text: 'Escribe una solicitud para comenzar.' };
 
   const modelLower = String(selectedModel || '').toLowerCase();
-  const useOpenAi = modelLower.includes('gpt-5.6') || modelLower.includes('gpt-5.5') || modelLower.includes('gpt-4o') || modelLower.includes('openai');
+  const useOpenAi = modelLower.includes('gpt-') || modelLower.includes('openai');
   const useZai = !useOpenAi;
 
-  // Si OpenAI GPT-5.6 Luna está seleccionado y conectado, delegar la consulta
+  if (useOpenAi && !adapters.openai.connected) {
+    return { type: 'blocked', text: `OpenAI no está conectado. Configura OPENAI_API_KEY o usa el panel de configuración. Estado actual: ${adapters.openai.status}.` };
+  }
+
+  // Si OpenAI está seleccionado y conectado, delegar la consulta.
   if (useOpenAi && adapters.openai.connected && adapters.openai.apiKey) {
     try {
       const systemPrompt = `Eres GPT-5.6 Luna, un arquitecto de software experto que trabaja dentro del ecosistema Antigravity AI.
@@ -586,7 +618,13 @@ Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar
       const aiResponse = await callOpenAiApi(messages);
       if (aiResponse) return { type: 'answer', text: aiResponse };
     } catch (err) {
+      if (err.statusCode === 401 || err.statusCode === 403) {
+        adapters.openai.status = 'auth_error';
+        adapters.openai.connected = false;
+      }
+      adapters.openai.lastError = err.message;
       event('error', `OpenAI error: ${err.message}`);
+      return { type: 'error', text: `OpenAI no pudo responder: ${err.message}` };
     }
   }
 
@@ -852,8 +890,12 @@ async function api(req, res, url) {
     const agents = [
       {
         id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', role: 'Architect',
-        status: adapters.openai.connected ? 'connected' : 'simulated',
+        status: adapters.openai.connected ? 'connected' : adapters.openai.status,
         adapter: adapters.openai.connected ? 'openai' : null,
+        model: adapters.openai.model,
+        endpoint: adapters.openai.baseUrl,
+        lastHealthCheck: adapters.openai.lastHealthCheck,
+        lastError: adapters.openai.lastError,
         lastHeartbeat: now()
       },
       {
@@ -1087,24 +1129,18 @@ async function api(req, res, url) {
     const body = await parseBody(req);
     const apiKey = String(body.apiKey || '').trim();
     if (!apiKey) return json(res, 400, { ok: false, error: 'API Key requerida' });
+    if (apiKey.length > 300 || /[\r\n]/.test(apiKey)) return json(res, 400, { ok: false, error: 'API Key inválida' });
 
     adapters.openai.apiKey = apiKey;
-    adapters.openai.status = 'connected';
-    adapters.openai.connected = true;
-
-    try {
-      await callOpenAiApi([{ role: 'user', content: 'ping' }]);
-      event('success', 'OpenAI GPT-5.6 Luna conectado exitosamente');
-      persist();
-      return json(res, 200, { ok: true, adapter: { name: adapters.openai.name, status: 'connected', connected: true } });
-    } catch (err) {
-      adapters.openai.status = 'auth_error';
-      adapters.openai.connected = false;
-      adapters.openai.apiKey = null;
-      event('error', `OpenAI auth falló: ${err.message}`);
-      persist();
-      return json(res, 200, { ok: false, error: err.message, adapter: { name: adapters.openai.name, status: 'auth_error', connected: false } });
+    adapters.openai.status = 'checking';
+    const result = await checkOpenAiConnection();
+    if (result.ok) {
+      event('success', `OpenAI conectado: ${adapters.openai.model}`);
+      return json(res, 200, { ok: true, adapter: publicOpenAiAdapter() });
     }
+    adapters.openai.apiKey = null;
+    event('error', `OpenAI no pudo autenticarse: ${result.error || result.status}`);
+    return json(res, result.status === 'auth_error' ? 401 : 502, { ok: false, error: result.error || 'No se pudo validar OpenAI', adapter: publicOpenAiAdapter() });
   }
 
   // DELETE /api/adapters/openai/configure — disconnect OpenAI
@@ -1112,51 +1148,14 @@ async function api(req, res, url) {
     adapters.openai.apiKey = null;
     adapters.openai.status = 'not_configured';
     adapters.openai.connected = false;
+    adapters.openai.lastError = null;
     event('agent', 'OpenAI GPT-5.6 Luna desconectado');
-    persist();
-    return json(res, 200, { ok: true, adapter: { name: adapters.openai.name, status: 'not_configured', connected: false } });
+    return json(res, 200, { ok: true, adapter: publicOpenAiAdapter() });
   }
 
-  // GET /api/adapters/openai/debug — test OpenAI connection and return raw response
-  if (req.method === 'GET' && url.pathname === '/api/adapters/openai/debug') {
-    if (!adapters.openai.apiKey) {
-      return json(res, 200, { ok: false, error: 'No hay API Key configurada', adapter: { status: adapters.openai.status } });
-    }
-    const debugResult = { ok: false, adapter: { status: adapters.openai.status, connected: adapters.openai.connected, model: 'gpt-5.6-luna', endpoint: 'https://api.openai.com/v1/responses' } };
-    try {
-      // Hacer un test call y capturar la respuesta raw
-      const result = await new Promise((resolve, reject) => {
-        const payload = JSON.stringify({ model: 'gpt-5.6-luna', input: 'Say "hello" in one word.', max_output_tokens: 50 });
-        const url = new URL(adapters.openai.baseUrl + 'responses');
-        const options = {
-          hostname: url.hostname, port: 443, path: url.pathname, method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'Authorization': `Bearer ${adapters.openai.apiKey}` }
-        };
-        const req = https.request(options, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            try {
-              const json = JSON.parse(data);
-              resolve({ statusCode: res.statusCode, body: json, rawLength: data.length });
-            } catch (e) {
-              resolve({ statusCode: res.statusCode, body: null, raw: data.slice(0, 500) });
-            }
-          });
-        });
-        req.on('error', (e) => reject(e));
-        req.setTimeout(30000, () => { req.destroy(); reject(new Error('Timeout 30s')); });
-        req.write(payload);
-        req.end();
-      });
-      debugResult.httpStatus = result.statusCode;
-      debugResult.responseBody = result.body;
-      if (result.raw) debugResult.rawResponse = result.raw;
-      debugResult.ok = result.statusCode >= 200 && result.statusCode < 300;
-    } catch (err) {
-      debugResult.error = err.message;
-    }
-    return json(res, 200, debugResult);
+  if (req.method === 'GET' && url.pathname === '/api/adapters/openai/health') {
+    const result = await checkOpenAiConnection();
+    return json(res, result.ok ? 200 : 503, { ok: result.ok, adapter: publicOpenAiAdapter(), error: result.error || null });
   }
 
   // POST /api/adapters/zai/configure — connect Z.ai with API key
@@ -1223,4 +1222,4 @@ if (require.main === module) {
   server.listen(PORT, '127.0.0.1', () => console.log(`Dashboard listo en http://127.0.0.1:${PORT}`));
 }
 
-module.exports = { server, PORT, activeWorkers, FORGE_WORKER_TOKEN, FORGE_PROJECTS_ROOT, validateWorkspacePath, isWithin, runRepositoryTests, antigravityAdapter };
+module.exports = { server, PORT, activeWorkers, adapters, FORGE_WORKER_TOKEN, FORGE_PROJECTS_ROOT, validateWorkspacePath, isWithin, runRepositoryTests, antigravityAdapter };

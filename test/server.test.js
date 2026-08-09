@@ -12,6 +12,7 @@ process.env.FORGE_WORKER_TOKEN = 'forge_test_token_0123456789abcdef0123456789';
 const {
   server,
   activeWorkers,
+  adapters,
   FORGE_WORKER_TOKEN,
   FORGE_PROJECTS_ROOT,
   validateWorkspacePath,
@@ -208,6 +209,46 @@ test('12. AntigravityAdapter realiza handshake, envío y cancelación HTTP reale
     assert.deepEqual(await adapter.cancelTask('remote-1'), { ok: true, status: 'cancelled' });
     assert.ok(calls.every(call => call.auth === 'Bearer remote-token'));
   } finally {
+    await new Promise(resolve => remote.close(resolve));
+  }
+});
+
+test('13. Configura OpenAI, valida la clave y enruta el chat por Responses API sin exponerla', async () => {
+  const calls = [];
+  const remote = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      calls.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: raw ? JSON.parse(raw) : null });
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'GET' && req.url === '/v1/models') return res.end(JSON.stringify({ object: 'list', data: [] }));
+      if (req.method === 'POST' && req.url === '/v1/responses') return res.end(JSON.stringify({ output_text: 'Respuesta real de OpenAI simulada' }));
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { message: 'not found' } }));
+    });
+  });
+  await new Promise(resolve => remote.listen(0, '127.0.0.1', resolve));
+  const previousBaseUrl = adapters.openai.baseUrl;
+  try {
+    adapters.openai.baseUrl = `http://127.0.0.1:${remote.address().port}/v1/`;
+    const configured = await request('/api/adapters/openai/configure', 'POST', { apiKey: 'sk-test-openai-key' }, browserHeaders());
+    assert.equal(configured.status, 200);
+    assert.equal(configured.body.ok, true);
+    assert.equal(configured.body.adapter.configured, true);
+    assert.equal('apiKey' in configured.body.adapter, false);
+
+    const agents = await request('/api/agents');
+    const openaiAgent = agents.body.agents.find(agent => agent.id === 'gpt-5.6-luna');
+    assert.equal(openaiAgent.status, 'connected');
+    assert.equal('apiKey' in openaiAgent, false);
+
+    const chat = await request('/api/chat', 'POST', { message: 'Responde usando OpenAI', model: 'GPT-5.6 Luna' }, browserHeaders());
+    assert.equal(chat.status, 201);
+    assert.equal(chat.body.assistantMessage.content, 'Respuesta real de OpenAI simulada');
+    assert.ok(calls.some(call => call.method === 'POST' && call.url === '/v1/responses' && call.auth === 'Bearer sk-test-openai-key'));
+  } finally {
+    await request('/api/adapters/openai/configure', 'DELETE', null, browserHeaders());
+    adapters.openai.baseUrl = previousBaseUrl;
     await new Promise(resolve => remote.close(resolve));
   }
 });
