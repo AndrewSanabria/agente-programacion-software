@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "test": "node --no-warnings --test test/server.test.js"
+    "worker": "node worker-local.js",
+    "test": "node --test test/server.test.js"
   }
 }

@@ -2,9 +2,10 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { getWorkerToken } = require('./config');
 
 const CONTROL_PLANE_URL = process.env.CONTROL_PLANE_URL || 'http://127.0.0.1:4173';
-const FORGE_WORKER_TOKEN = process.env.FORGE_WORKER_TOKEN || 'forge_dev_token_4173';
+const FORGE_WORKER_TOKEN = getWorkerToken();
 const WORKER_NAME = process.env.WORKER_NAME || 'worker-local';
 const WORKER_ID = process.env.WORKER_ID || `worker_mac_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
 const FORGE_PROJECTS_ROOT = process.env.FORGE_PROJECTS_ROOT || path.resolve(__dirname);
@@ -12,6 +13,15 @@ const FORGE_PROJECTS_ROOT = process.env.FORGE_PROJECTS_ROOT || path.resolve(__di
 let isRegistered = false;
 let heartbeatTimer = null;
 let pollTimer = null;
+let registrationTimer = null;
+
+function scheduleRegistration() {
+  if (registrationTimer) clearTimeout(registrationTimer);
+  registrationTimer = setTimeout(() => {
+    registrationTimer = null;
+    registerWorker();
+  }, 2000);
+}
 
 function requestApi(endpoint, method = 'GET', body = null) {
   return new Promise((resolve, reject) => {
@@ -64,7 +74,7 @@ async function registerWorker() {
       pid: process.pid,
       token: FORGE_WORKER_TOKEN,
       root: FORGE_PROJECTS_ROOT,
-      capabilities: ['review', 'build', 'worktree', 'test_runner']
+      capabilities: ['review', 'build', 'worktree']
     });
 
     if (res.statusCode === 200 && res.data?.ok) {
@@ -74,9 +84,11 @@ async function registerWorker() {
       startPolling();
     } else {
       console.error(`[Worker Local] Registro fallido: ${res.data?.error || 'Token inválido o rechazo'}`);
+      scheduleRegistration();
     }
   } catch (err) {
     console.error(`[Worker Local] Error al conectar con Control Plane: ${err.message}`);
+    scheduleRegistration();
   }
 }
 
@@ -134,19 +146,14 @@ async function executeTask(task) {
     if (task.intent === 'review' || task.type === 'review') {
       // Inspección real de solo lectura
       const inspectedFiles = ['AGENTS.md', 'README.md', 'package.json', 'server.js', 'public/app.js'];
-      let testOutput = 'Sin script de pruebas';
-      try {
-        testOutput = execFileSync('npm', ['test'], { cwd: FORGE_PROJECTS_ROOT, encoding: 'utf8', timeout: 5000 });
-      } catch (e) {
-        testOutput = e.stdout || e.message;
-      }
+      const testOutput = 'Pruebas no ejecutadas desde el worker: requieren CI o un sandbox dedicado.';
 
       await requestApi(`/api/workers/tasks/${task.id}/report`, 'POST', {
         workerId: WORKER_ID,
         status: 'completed',
         stage: 'report',
         progress: 100,
-        result: `Inspección completada de ${inspectedFiles.length} archivos. Pruebas: ${testOutput.slice(0, 100)}`,
+        result: `Inspección completada de ${inspectedFiles.length} archivos. Pruebas: ${String(testOutput).slice(0, 300)}`,
         durationMs: Date.now() - startTime
       });
     } else {
@@ -165,10 +172,10 @@ async function executeTask(task) {
 
       await requestApi(`/api/workers/tasks/${task.id}/report`, 'POST', {
         workerId: WORKER_ID,
-        status: 'completed',
-        stage: 'completed',
+        status: 'blocked',
+        stage: 'awaiting_patch',
         progress: 100,
-        result: `Construcción ejecutada en worktree aislado: ${worktreeDir}`,
+        result: `Worktree aislado preparado en ${worktreeDir}. No se aplicaron cambios porque la tarea no incluyó un parche verificable.`,
         durationMs: Date.now() - startTime
       });
     }

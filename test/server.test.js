@@ -1,35 +1,50 @@
-const test = require('node:test');
 const assert = require('node:assert/strict');
-const http = require('node:http');
 const fs = require('node:fs');
+const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
-const { server, PORT, FORGE_WORKER_TOKEN, FORGE_PROJECTS_ROOT, validateWorkspacePath } = require('../server');
+const test = require('node:test');
 
-let testServer;
+process.env.FORGE_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-state-'));
+process.env.FORGE_PROJECTS_ROOT = path.dirname(__dirname);
+process.env.FORGE_WORKER_TOKEN = 'forge_test_token_0123456789abcdef0123456789';
+
+const {
+  server,
+  activeWorkers,
+  FORGE_WORKER_TOKEN,
+  FORGE_PROJECTS_ROOT,
+  validateWorkspacePath,
+  runRepositoryTests
+} = require('../server');
+
 const TEST_PORT = 4174;
+let browserCookie;
+let csrfToken;
 
-function httpRequest(pathUrl, method = 'GET', body = null, headers = {}) {
+function request(requestPath, method = 'GET', body = null, headers = {}) {
   return new Promise((resolve, reject) => {
-    const payload = body ? JSON.stringify(body) : null;
+    const payload = body === null ? null : JSON.stringify(body);
     const req = http.request({
       hostname: '127.0.0.1',
       port: TEST_PORT,
-      path: pathUrl,
-      method: method,
+      path: requestPath,
+      method,
       headers: {
-        'Content-Type': 'application/json',
-        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+        ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
         ...headers
       }
-    }, (res) => {
+    }, res => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.setEncoding('utf8');
+      res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
-        try {
-          resolve({ status: res.statusCode, headers: res.headers, body: data ? JSON.parse(data) : {} });
-        } catch {
-          resolve({ status: res.statusCode, headers: res.headers, raw: data });
+        const contentType = String(res.headers['content-type'] || '');
+        let bodyValue = data;
+        if (contentType.includes('application/json')) {
+          try { bodyValue = JSON.parse(data); } catch (_) { bodyValue = null; }
         }
+        resolve({ status: res.statusCode, headers: res.headers, body: bodyValue });
       });
     });
     req.on('error', reject);
@@ -38,175 +53,161 @@ function httpRequest(pathUrl, method = 'GET', body = null, headers = {}) {
   });
 }
 
+function browserHeaders(extra = {}) {
+  return { Cookie: browserCookie, 'X-CSRF-Token': csrfToken, ...extra };
+}
+
+function workerHeaders(workerId) {
+  return { Authorization: `Bearer ${FORGE_WORKER_TOKEN}`, 'X-Worker-ID': workerId };
+}
+
+function parseSse(raw) {
+  return raw.split('\n\n').filter(Boolean).map(block => JSON.parse(block.replace(/^data:\s*/, '')));
+}
+
 test.before(async () => {
-  await new Promise((resolve) => {
-    testServer = server.listen(TEST_PORT, '127.0.0.1', () => {
-      if (testServer.unref) testServer.unref();
-      resolve();
-    });
-  });
+  await new Promise(resolve => server.listen(TEST_PORT, '127.0.0.1', resolve));
+  const page = await request('/');
+  browserCookie = page.headers['set-cookie'][0].split(';', 1)[0];
+  csrfToken = browserCookie.split('=', 2)[1];
 });
 
 test.after(async () => {
-  if (testServer) {
-    testServer.closeAllConnections?.();
-    await new Promise(resolve => testServer.close(resolve));
-  }
+  activeWorkers.clear();
+  server.closeAllConnections?.();
+  await new Promise(resolve => server.close(resolve));
 });
 
-// 1. Registro correcto del worker
-test('1. Registro correcto del worker local con token válido', async () => {
-  const res = await httpRequest('/api/workers/register', 'POST', {
-    workerId: 'test_worker_101',
-    name: 'worker-local-test',
-    pid: 1234,
-    token: FORGE_WORKER_TOKEN,
-    root: FORGE_PROJECTS_ROOT
-  });
+test('1. Las mutaciones del navegador requieren CSRF y las válidas pasan', async () => {
+  const blocked = await request('/api/projects', 'POST', { name: 'Sin CSRF' }, { Cookie: browserCookie });
+  assert.equal(blocked.status, 403);
 
-  assert.equal(res.status, 200);
-  assert.equal(res.body.ok, true);
-  assert.equal(res.body.status, 'connected');
-  assert.equal(res.body.workerId, 'test_worker_101');
+  const valid = await request('/api/projects', 'POST', { name: 'Proyecto seguro', localPath: FORGE_PROJECTS_ROOT }, browserHeaders());
+  assert.equal(valid.status, 201);
+  assert.equal(valid.body.localPath, fs.realpathSync(FORGE_PROJECTS_ROOT));
 });
 
-// 2. Heartbeat válido
-test('2. Heartbeat válido de worker registrado', async () => {
-  const res = await httpRequest('/api/workers/heartbeat', 'POST', {
-    workerId: 'test_worker_101',
-    token: FORGE_WORKER_TOKEN
+test('2. Registra el worker con bearer token válido y rechaza el token en el body', async () => {
+  const rejected = await request('/api/workers/register', 'POST', {
+    workerId: 'body_only_worker', token: FORGE_WORKER_TOKEN, root: FORGE_PROJECTS_ROOT
   });
+  assert.equal(rejected.status, 401);
 
-  assert.equal(res.status, 200);
-  assert.equal(res.body.ok, true);
-  assert.equal(res.body.status, 'connected');
-  assert.ok(res.body.lastHeartbeat);
+  const registered = await request('/api/workers/register', 'POST', {
+    workerId: 'test_worker_101', name: 'worker-local-test', pid: 1234, root: FORGE_PROJECTS_ROOT
+  }, workerHeaders('test_worker_101'));
+  assert.equal(registered.status, 200);
+  assert.equal(registered.body.status, 'connected');
 });
 
-// 3. Desconexión después de perder heartbeat (Timeout Simulation)
-test('3. Desconexión después de perder heartbeat o consulta a un worker no registrado', async () => {
-  const res = await httpRequest('/api/workers/heartbeat', 'POST', {
-    workerId: 'unknown_worker_999',
-    token: FORGE_WORKER_TOKEN
-  });
+test('3. Acepta heartbeat y solo entrega tareas a workers registrados', async () => {
+  const heartbeat = await request('/api/workers/heartbeat', 'POST', { workerId: 'test_worker_101' }, workerHeaders('test_worker_101'));
+  assert.equal(heartbeat.status, 200);
+  assert.ok(heartbeat.body.lastHeartbeat);
 
-  assert.equal(res.status, 404);
-  assert.equal(res.body.ok, false);
+  const task = await request('/api/tasks', 'POST', { title: 'Tarea aislada', projectId: 'proj_demo' }, browserHeaders());
+  assert.equal(task.status, 201);
+
+  const poll = await request('/api/workers/poll', 'POST', { workerId: 'test_worker_101' }, workerHeaders('test_worker_101'));
+  assert.equal(poll.status, 200);
+  assert.equal(poll.body.task.id, task.body.id);
+
+  const unknownPoll = await request('/api/workers/poll', 'POST', { workerId: 'unknown_worker' }, workerHeaders('unknown_worker'));
+  assert.equal(unknownPoll.status, 404);
 });
 
-// 4. Rechazo de token inválido
-test('4. Rechazo de token de worker inválido (401 Unauthorized)', async () => {
-  const res = await httpRequest('/api/workers/register', 'POST', {
-    workerId: 'test_worker_bad',
-    token: 'token_falso_invalido'
-  });
-
-  assert.equal(res.status, 401);
-  assert.equal(res.body.ok, false);
-  assert.match(res.body.error, /inválido/i);
+test('4. Desconecta el worker después de perder heartbeat', async () => {
+  const workerId = 'timeout_worker';
+  const registered = await request('/api/workers/register', 'POST', { workerId, root: FORGE_PROJECTS_ROOT }, workerHeaders(workerId));
+  assert.equal(registered.status, 200);
+  await new Promise(resolve => setTimeout(resolve, 9500));
+  const health = await request('/api/health');
+  assert.equal(health.body.status, 'offline');
+  assert.equal(activeWorkers.get(workerId).status, 'disconnected');
 });
 
-// 5. Rechazo de rutas fuera del workspace (Path Jail con evasión de prefijo)
-test('5. Rechazo de rutas fuera del workspace (Path Jail anti evasión de prefijo)', async () => {
-  const invalidPathCheck = validateWorkspacePath('/tmp/hack_outside_directory');
-  assert.equal(invalidPathCheck.ok, false);
-  assert.match(invalidPathCheck.error, /Acceso denegado/i);
+test('5. Rechaza token inválido y rutas fuera del workspace, incluido el bypass por prefijo', async () => {
+  const badAuth = await request('/api/workers/register', 'POST', { workerId: 'bad', root: FORGE_PROJECTS_ROOT }, {});
+  assert.equal(badAuth.status, 401);
 
-  // Intento de evasión por prefijo similar: /path/to/project-hacker
-  const prefixEvasionCheck = validateWorkspacePath(FORGE_PROJECTS_ROOT + '-hacker');
-  assert.equal(prefixEvasionCheck.ok, false);
-  assert.match(prefixEvasionCheck.error, /Acceso denegado/i);
-
-  const res = await httpRequest('/api/workers/register', 'POST', {
-    workerId: 'test_worker_jail',
-    token: FORGE_WORKER_TOKEN,
-    root: FORGE_PROJECTS_ROOT + '-hacker'
-  });
-
-  assert.equal(res.status, 403);
-  assert.equal(res.body.ok, false);
+  assert.equal(validateWorkspacePath(FORGE_PROJECTS_ROOT + '-hacker').ok, false);
+  const outside = await request('/api/workers/register', 'POST', { workerId: 'outside', root: os.tmpdir() }, workerHeaders('outside'));
+  assert.equal(outside.status, 403);
 });
 
-// 6. Ejecución real de una tarea en worktree aislado
-test('6. Creación y asignación de tareas a cola para worker aislado', async () => {
-  const resTask = await httpRequest('/api/tasks', 'POST', {
-    title: 'Tarea de prueba unitaria aislada',
-    projectId: 'proj_demo',
-    priority: 'high'
-  });
-
-  assert.equal(resTask.status, 201);
-  assert.equal(resTask.body.status, 'queued');
-
-  const resPoll = await httpRequest('/api/workers/poll', 'POST', {
-    workerId: 'test_worker_101',
-    token: FORGE_WORKER_TOKEN
-  });
-
-  assert.equal(resPoll.status, 200);
-  assert.equal(resPoll.body.ok, true);
-  assert.ok(resPoll.body.task);
-  assert.equal(resPoll.body.task.title, 'Tarea de prueba unitaria aislada');
+test('6. La revisión no ejecuta scripts arbitrarios por defecto', () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-project-'));
+  const marker = path.join(projectDir, 'should-not-exist');
+  const result = runRepositoryTests(projectDir, { scripts: { test: `node -e "require('fs').writeFileSync('${marker}', 'executed')"` } });
+  assert.equal(result.status, 'not_run');
+  assert.equal(fs.existsSync(marker), false);
 });
 
-// 7. Cancelación y retry de runs
-test('7. Cancelación y reintento de runs', async () => {
-  const resConv = await httpRequest('/api/conversations', 'POST', {
-    projectId: 'proj_demo',
-    title: 'Prueba cancelacion'
-  });
-  assert.equal(resConv.status, 201);
-  const convId = resConv.body.conversation.id;
-
-  const resMsg = await httpRequest(`/api/conversations/${convId}/messages`, 'POST', {
-    content: 'Revisa el proyecto para probar cancelacion'
-  });
-  assert.equal(resMsg.status, 201);
-  const runId = resMsg.body.run.id;
-
-  const resCancel = await httpRequest(`/api/runs/${runId}/cancel`, 'POST');
-  assert.equal(resCancel.status, 200);
-  assert.equal(resCancel.body.run.status, 'cancelled');
-
-  const resRetry = await httpRequest(`/api/runs/${runId}/retry`, 'POST');
-  assert.equal(resRetry.status, 200);
-  assert.ok(['running', 'completed'].includes(resRetry.body.run.status));
+test('7. Cancela y reintenta un run con estado verificable', async () => {
+  const conversation = await request('/api/conversations', 'POST', { projectId: 'proj_demo', title: 'Run test' }, browserHeaders());
+  const message = await request(`/api/conversations/${conversation.body.conversation.id}/messages`, 'POST', { content: 'Revisa el proyecto' }, browserHeaders());
+  const runId = message.body.run.id;
+  const cancelled = await request(`/api/runs/${runId}/cancel`, 'POST', null, browserHeaders());
+  assert.equal(cancelled.body.run.status, 'cancelled');
+  const retried = await request(`/api/runs/${runId}/retry`, 'POST', null, browserHeaders());
+  assert.ok(['running', 'completed'].includes(retried.body.run.status));
 });
 
-// 8. SSE con eventos progresivos
-test('8. Subscripción a SSE de runs en /api/runs/:id/events y validación de payload', async () => {
-  const resConv = await httpRequest('/api/conversations', 'POST', {
-    projectId: 'proj_demo',
-    title: 'Prueba SSE'
-  });
-  const convId = resConv.body.conversation.id;
-
-  const resMsg = await httpRequest(`/api/conversations/${convId}/messages`, 'POST', {
-    content: 'Analizar eventos SSE'
-  });
-  const runId = resMsg.body.run.id;
-
-  const sseRes = await httpRequest(`/api/runs/${runId}/events`, 'GET');
-  assert.equal(sseRes.status, 200);
-  assert.equal(sseRes.headers['content-type'], 'text/event-stream');
-  assert.match(sseRes.raw, /data: \{"type":"state"/);
+test('8. SSE entrega eventos JSON parseables y termina con done', async () => {
+  const conversation = await request('/api/conversations', 'POST', { projectId: 'proj_demo', title: 'SSE test' }, browserHeaders());
+  const message = await request(`/api/conversations/${conversation.body.conversation.id}/messages`, 'POST', { content: 'Analiza SSE' }, browserHeaders());
+  const response = await request(`/api/runs/${message.body.run.id}/events`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers['content-type'], 'text/event-stream');
+  const events = parseSse(response.body);
+  assert.equal(events[0].type, 'state');
+  assert.equal(events.at(-1).type, 'done');
 });
 
-// 9. Ausencia de ejecución arbitraria desde el navegador
-test('9. El servidor rechaza la ejecución arbitraria de comandos recibidos por navegador', async () => {
-  const res = await httpRequest('/api/chat', 'POST', {
-    message: 'exec(rm -rf /)'
-  });
-  assert.ok(res.status === 200 || res.status === 201);
-  assert.match(res.body.assistantMessage.content, /Antigravity AI/i);
+test('9. Un mensaje que contiene comandos no dispara ejecución de shell', async () => {
+  const marker = path.join(process.env.FORGE_DATA_DIR, 'shell-marker');
+  const response = await request('/api/chat', 'POST', { message: `exec(require('fs').writeFileSync('${marker}', 'bad'))` }, browserHeaders());
+  assert.equal(response.status, 201);
+  assert.equal(fs.existsSync(marker), false);
 });
 
-// 10. Verificación de contrato real AntigravityAdapter
-test('10. Contrato de AntigravityAdapter devuelve missing_credentials o disconnected en ausencia de URL remota', async () => {
+test('10. /api/user no expone secretos y refleja conexión real', async () => {
+  const response = await request('/api/user');
+  assert.equal(response.status, 200);
+  assert.equal(response.body.authenticated, false);
+  assert.equal('sessionToken' in response.body, false);
+  assert.equal('sessionSignature' in response.body, false);
+  assert.equal(response.body.antigravityConnected, false);
+});
+
+test('11. AntigravityAdapter requiere URL y no afirma conexión sin health check', async () => {
   const AntigravityAdapter = require('../antigravity-adapter');
   const adapter = new AntigravityAdapter();
   const health = await adapter.healthCheck();
-  assert.equal(health.ok, false);
   assert.equal(health.status, 'missing_credentials');
   assert.equal(adapter.connected, false);
+});
+
+test('12. AntigravityAdapter realiza handshake, envío y cancelación HTTP reales', async () => {
+  const AntigravityAdapter = require('../antigravity-adapter');
+  const calls = [];
+  const remote = http.createServer((req, res) => {
+    calls.push({ method: req.method, url: req.url, auth: req.headers.authorization });
+    if (req.url === '/health') return res.end(JSON.stringify({ ok: true }));
+    if (req.method === 'POST' && req.url === '/api/tasks') return res.end(JSON.stringify({ ok: true, taskId: 'remote-1' }));
+    if (req.method === 'POST' && req.url === '/api/tasks/remote-1/cancel') return res.end(JSON.stringify({ ok: true, status: 'cancelled' }));
+    res.statusCode = 404;
+    res.end(JSON.stringify({ ok: false }));
+  });
+  await new Promise(resolve => remote.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = remote.address().port;
+    const adapter = new AntigravityAdapter({ url: `http://127.0.0.1:${port}`, token: 'remote-token' });
+    assert.equal((await adapter.healthCheck()).ok, true);
+    assert.deepEqual(await adapter.sendTask({ title: 'remote task' }), { ok: true, taskId: 'remote-1' });
+    assert.deepEqual(await adapter.cancelTask('remote-1'), { ok: true, status: 'cancelled' });
+    assert.ok(calls.every(call => call.auth === 'Bearer remote-token'));
+  } finally {
+    await new Promise(resolve => remote.close(resolve));
+  }
 });

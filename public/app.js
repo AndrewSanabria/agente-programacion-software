@@ -1,4 +1,17 @@
 document.addEventListener('DOMContentLoaded', () => {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const requestUrl = typeof input === 'string' ? input : input.url;
+    const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+    if (requestUrl.startsWith('/') && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      const csrf = document.cookie.split('; ').find(value => value.startsWith('forge_csrf='))?.split('=').slice(1).join('=');
+      const headers = new Headers((typeof input === 'object' && input.headers) || init.headers || {});
+      if (csrf) headers.set('X-CSRF-Token', decodeURIComponent(csrf));
+      init = { ...init, headers };
+    }
+    return nativeFetch(input, init);
+  };
+
   // ===== APPLICATION STATE =====
   let appState = {
     projects: [],
@@ -545,7 +558,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.ok) return;
       data.agents.forEach(agent => {
         // Mapear IDs del API a IDs de los badges en el HTML
-        const badgeIdMap = { 'gpt-5.6-luna': 'gpt', 'claude-3.5': 'claude', 'antigravity': 'antigravity', 'zai-glm': 'zai-glm' };
+        const badgeIdMap = { 'gpt-5.6-luna': 'gpt', 'claude-3.5': 'claude', 'antigravity': 'antigravity', 'antigravity-engine': 'antigravity', 'worker-local': 'worker-local', 'zai-glm': 'zai-glm' };
         const badgeKey = badgeIdMap[agent.id] || agent.id;
         const badge = document.getElementById(`agent-badge-${badgeKey}`);
         if (!badge) return;
@@ -559,16 +572,18 @@ document.addEventListener('DOMContentLoaded', () => {
         badge.textContent = label;
         badge.setAttribute('data-status', agent.status);
       });
-      // Worker status en footer del sidebar
+      // Estado del motor remoto y del worker local se mantienen separados.
       const workerFooter = document.getElementById('worker-status-footer');
       if (workerFooter) {
-        const agy = data.agents.find(a => a.id === 'antigravity');
-        const wIcon = agy.status === 'connected' ? '🟢'
-                     : agy.status === 'simulated' ? '🟡'
+        const agy = data.agents.find(a => a.id === 'antigravity-engine') || data.agents.find(a => a.id === 'antigravity') || { status: 'disconnected' };
+        const worker = data.agents.find(a => a.id === 'worker-local') || { status: 'disconnected' };
+        const wIcon = worker.status === 'connected' ? '🟢'
+                     : worker.status === 'simulated' ? '🟡'
                      : '🔴';
-        workerFooter.textContent = `Antigravity ${wIcon}`;
-        workerFooter.style.color = agy.status === 'connected' ? 'var(--success)'
-                                 : agy.status === 'simulated' ? 'var(--warning)'
+        const agIcon = agy.status === 'connected' ? '🟢' : '🔴';
+        workerFooter.textContent = `Antigravity ${agIcon} · Worker ${wIcon}`;
+        workerFooter.style.color = worker.status === 'connected' ? 'var(--success)'
+                                 : worker.status === 'simulated' ? 'var(--warning)'
                                  : 'var(--danger)';
       }
     } catch { /* silently fail — la UI muestra el último estado conocido */ }

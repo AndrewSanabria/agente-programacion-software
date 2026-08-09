@@ -6,16 +6,24 @@ const https = require('node:https');
 const { execFileSync } = require('node:child_process');
 
 const AntigravityAdapter = require('./antigravity-adapter');
+const { DATA_DIR, getWorkerToken } = require('./config');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
-const DATA_DIR = path.join(ROOT, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const PORT = Number(process.env.PORT || 4173);
 
-const FORGE_WORKER_TOKEN = process.env.FORGE_WORKER_TOKEN || ('forge_sec_' + crypto.randomBytes(16).toString('hex'));
+const FORGE_WORKER_TOKEN = getWorkerToken();
 const FORGE_PROJECTS_ROOT = path.resolve(process.env.FORGE_PROJECTS_ROOT || ROOT);
-const SERVER_HMAC_SECRET = process.env.SERVER_HMAC_SECRET || crypto.randomBytes(32).toString('hex');
+const CSRF_COOKIE = 'forge_csrf';
+const MAX_BODY_BYTES = 1e6;
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'same-origin',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+};
 
 const antigravityAdapter = new AntigravityAdapter({
   url: process.env.ANTIGRAVITY_URL,
@@ -28,12 +36,21 @@ const activeWorkers = new Map();
 function validateWorkspacePath(targetPath) {
   if (!targetPath) return { ok: true, resolved: FORGE_PROJECTS_ROOT };
   const allowedRoot = path.resolve(FORGE_PROJECTS_ROOT);
-  const resolved = path.resolve(targetPath);
-  const relative = path.relative(allowedRoot, resolved);
+  let resolved;
+  try {
+    resolved = fs.realpathSync(path.resolve(String(targetPath)));
+  } catch {
+    return { ok: false, error: `Acceso denegado: la ruta no existe o no es accesible: ${targetPath}` };
+  }
+  let realRoot;
+  try { realRoot = fs.realpathSync(allowedRoot); }
+  catch { return { ok: false, error: `El workspace configurado no existe: ${allowedRoot}` }; }
+  const relative = path.relative(realRoot, resolved);
   const isInside = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
   if (!isInside) {
-    return { ok: false, error: `Acceso denegado: La ruta "${targetPath}" está fuera del workspace FORGE_PROJECTS_ROOT (${allowedRoot})` };
+    return { ok: false, error: `Acceso denegado: La ruta "${targetPath}" está fuera del workspace FORGE_PROJECTS_ROOT (${realRoot})` };
   }
+  if (!fs.statSync(resolved).isDirectory()) return { ok: false, error: `La ruta no es una carpeta: ${resolved}` };
   return { ok: true, resolved };
 }
 
@@ -41,7 +58,7 @@ function validateWorkspacePath(targetPath) {
 const adapters = {
   openai:     { name: 'OpenAI GPT-5.6 Luna', status: 'not_configured', apiKey: null, apiKeyEnv: 'OPENAI_API_KEY', baseUrl: 'https://api.openai.com/v1/', connected: false },
   anthropic:  { name: 'Anthropic Claude', status: 'not_configured', apiKeyEnv: 'ANTHROPIC_API_KEY', connected: false },
-  antigravity:{ name: 'Antigravity Engine', status: 'disconnected', connected: false, endpoint: process.env.ANTIGRAVITY_URL || null },
+  antigravity:{ name: 'Antigravity Engine', status: process.env.ANTIGRAVITY_URL ? 'disconnected' : 'missing_credentials', connected: false, url: process.env.ANTIGRAVITY_URL || null, endpoint: process.env.ANTIGRAVITY_URL || null, lastHealthCheck: null, lastError: null },
   zai:        { name: 'Z.ai GLM-5.2', status: 'not_configured', apiKey: null, baseUrl: 'https://api.z.ai/api/paas/v4/', connected: false }
 };
 
@@ -59,6 +76,8 @@ async function initAdapters() {
   const agHealth = await antigravityAdapter.healthCheck();
   adapters.antigravity.status = agHealth.status;
   adapters.antigravity.connected = agHealth.connected;
+  adapters.antigravity.lastHealthCheck = antigravityAdapter.lastHealthCheck;
+  adapters.antigravity.lastError = antigravityAdapter.lastError;
   if (process.env.OPENAI_API_KEY) connectAdapter('openai');
   if (process.env.ANTHROPIC_API_KEY) connectAdapter('anthropic');
   if (process.env.ZAI_API_KEY) connectAdapter('zai');
@@ -250,7 +269,7 @@ function seedState() {
       { id: id('evt'), type: 'system', message: 'Worker local listo para recibir tareas', createdAt: now() },
       { id: id('evt'), type: 'success', message: 'Proyecto demo conectado', createdAt: now() }
     ],
-    worker: { status: 'online', name: 'worker-local', lastHeartbeat: now() }
+    worker: { status: 'offline', name: 'worker-local', lastHeartbeat: null }
   };
 }
 
@@ -258,7 +277,7 @@ function loadState() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(STATE_FILE)) {
     const initial = seedState();
-    fs.writeFileSync(STATE_FILE, JSON.stringify(initial, null, 2));
+    fs.writeFileSync(STATE_FILE, JSON.stringify(initial, null, 2), { mode: 0o600 });
     return initial;
   }
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); }
@@ -266,7 +285,8 @@ function loadState() {
 }
 
 let state = loadState();
-function ensureUserState() {
+function sanitizeState() {
+  let changed = false;
   if (!state.user) {
     state.user = {
       id: 'usr_andres_sanabria',
@@ -277,22 +297,17 @@ function ensureUserState() {
       connectedSince: now(),
       role: 'Software Architect & Antigravity User'
     };
+    changed = true;
   }
-  if (!state.user.sessionToken) {
-    state.user.sessionToken = 'agy_sess_' + crypto.randomBytes(24).toString('hex');
-    state.user.sessionClaims = {
-      iss: 'Antigravity Control Plane',
-      sub: state.user.id,
-      aud: 'Antigravity Local IDE',
-      iat: Date.now(),
-      exp: Date.now() + 86400000 * 30
-    };
-    state.user.sessionSignature = crypto.createHmac('sha256', SERVER_HMAC_SECRET)
-      .update(`${state.user.id}:${state.user.sessionToken}`)
-      .digest('hex');
+  for (const secretField of ['sessionToken', 'sessionClaims', 'sessionSignature']) {
+    if (secretField in state.user) { delete state.user[secretField]; changed = true; }
   }
+  if (!state.worker) { state.worker = { status: 'offline', name: 'worker-local', lastHeartbeat: null }; changed = true; }
+  if (!Array.isArray(state.tasks)) { state.tasks = []; changed = true; }
+  if (!Array.isArray(state.events)) { state.events = []; changed = true; }
+  return changed;
 }
-ensureUserState();
+if (sanitizeState()) persist();
 
 function startWorkerExpirationCheck() {
   const timer = setInterval(() => {
@@ -327,13 +342,23 @@ function startWorkerExpirationCheck() {
 }
 startWorkerExpirationCheck();
 
-function persist() { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); }
+function persist() {
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  const temporaryFile = path.join(DATA_DIR, `.state.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
+  fs.writeFileSync(temporaryFile, JSON.stringify(state, null, 2), { mode: 0o600 });
+  fs.renameSync(temporaryFile, STATE_FILE);
+}
 function ensureConversationState() {
   if (!Array.isArray(state.conversations)) state.conversations = [];
   if (!Array.isArray(state.messages)) state.messages = [];
   if (!Array.isArray(state.runs)) state.runs = [];
+  if (!Array.isArray(state.projects)) state.projects = [];
   const firstProject = state.projects?.[0];
   if (firstProject && (!firstProject.githubUrl || /tu-organizacion/i.test(firstProject.githubUrl))) firstProject.githubUrl = 'https://github.com/AndrewSanabria/agente-programacion-software';
+  for (const project of state.projects) {
+    const pathCheck = validateWorkspacePath(project.localPath === '.' ? ROOT : project.localPath);
+    if (!pathCheck.ok || project.localPath !== pathCheck.resolved) project.localPath = ROOT;
+  }
   if (!state.conversations.length && state.projects[0]) state.conversations.push({ id: id('conv'), projectId: state.projects[0].id, title: 'Conversación principal', createdAt: now(), updatedAt: now() });
 }
 ensureConversationState();
@@ -343,8 +368,40 @@ function event(type, message) {
 }
 
 function json(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(body));
+}
+
+function cookieValue(req, name) {
+  const cookies = String(req.headers.cookie || '').split(';');
+  const entry = cookies.find(item => item.trim().startsWith(`${name}=`));
+  if (!entry) return null;
+  try { return decodeURIComponent(entry.trim().slice(name.length + 1)); } catch { return null; }
+}
+
+function ensureCsrfCookie(req, res) {
+  const existing = cookieValue(req, CSRF_COOKIE);
+  if (existing) return existing;
+  const token = crypto.randomBytes(24).toString('hex');
+  res.setHeader('Set-Cookie', `${CSRF_COOKIE}=${token}; Path=/; SameSite=Strict`);
+  return token;
+}
+
+function csrfAllowed(req, res) {
+  if (SAFE_METHODS.has(req.method) || req.url.startsWith('/api/workers/')) return true;
+  const expected = cookieValue(req, CSRF_COOKIE);
+  const provided = String(req.headers['x-csrf-token'] || '');
+  if (!expected || !provided) {
+    json(res, 403, { ok: false, error: 'CSRF token requerido' });
+    return false;
+  }
+  const expectedBuffer = Buffer.from(expected);
+  const providedBuffer = Buffer.from(provided);
+  if (expectedBuffer.length !== providedBuffer.length || !crypto.timingSafeEqual(expectedBuffer, providedBuffer)) {
+    json(res, 403, { ok: false, error: 'CSRF token inválido' });
+    return false;
+  }
+  return true;
 }
 function parseBody(req) {
   return new Promise((resolve, reject) => {
@@ -389,8 +446,7 @@ function listRepositoryFiles(root, limit = 180) {
 
 function readRepositoryFile(root, relative, maxBytes = 120000) {
   const target = path.resolve(root, relative);
-  const rootWithSeparator = `${path.resolve(root)}${path.sep}`;
-  if (target !== path.resolve(root) && !target.startsWith(rootWithSeparator)) return null;
+  if (!isWithin(root, target)) return null;
   try {
     const stat = fs.statSync(target);
     if (!stat.isFile() || stat.size > maxBytes) return null;
@@ -409,21 +465,13 @@ function runRepositoryTests(root, packageJson) {
   if (!testScript || /no test|not configured/i.test(testScript)) {
     return { status: 'not_configured', command: null, output: 'No hay un script de pruebas configurado en package.json.' };
   }
-  try {
-    const output = execFileSync('npm', ['test'], {
-      cwd: root, encoding: 'utf8', timeout: 30000, maxBuffer: 300000
-    });
-    return { status: 'passed', command: 'npm test', output: output.slice(-5000) };
-  } catch (error) {
-    return { status: 'failed', command: 'npm test', output: `${error.stdout || ''}${error.stderr || ''}`.slice(-5000) };
-  }
+  return { status: 'not_run', command: null, output: 'No se ejecutan scripts definidos por el repositorio desde el servidor. Ejecuta las pruebas en CI o en un sandbox dedicado.' };
 }
 
 function reviewRepository(project) {
-  const root = path.resolve(project?.localPath || ROOT);
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
-    return { ok: false, error: `La ruta configurada no existe o no es una carpeta: ${root}` };
-  }
+  const pathCheck = validateWorkspacePath(project?.localPath || ROOT);
+  if (!pathCheck.ok) return { ok: false, error: pathCheck.error };
+  const root = pathCheck.resolved;
 
   const files = listRepositoryFiles(root);
   const byName = new Map(files.map(file => [path.basename(file).toLowerCase(), file]));
@@ -657,17 +705,20 @@ function runTask(task) {
 }
 
 async function api(req, res, url) {
-  // Helper to verify Worker Token
-  function verifyWorkerAuth(reqHeaderToken, bodyToken) {
-    const authHeader = req.headers['authorization'] || '';
-    const token = authHeader.replace(/^Bearer\s+/i, '') || bodyToken || '';
-    return token === FORGE_WORKER_TOKEN;
+  if (!csrfAllowed(req, res)) return;
+  function verifyWorkerAuth() {
+    const authHeader = String(req.headers.authorization || '');
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    const token = match ? match[1].trim() : '';
+    const expected = Buffer.from(FORGE_WORKER_TOKEN);
+    const received = Buffer.from(token);
+    return Boolean(token) && expected.length === received.length && crypto.timingSafeEqual(expected, received);
   }
 
   // POST /api/workers/register — Registro autenticado de worker local
   if (req.method === 'POST' && url.pathname === '/api/workers/register') {
     const body = await parseBody(req);
-    if (!verifyWorkerAuth(req.headers['authorization'], body.token)) {
+    if (!verifyWorkerAuth()) {
       return json(res, 401, { ok: false, error: 'Token de worker inválido (FORGE_WORKER_TOKEN)' });
     }
 
@@ -710,7 +761,7 @@ async function api(req, res, url) {
   // POST /api/workers/heartbeat — Heartbeat periódico de worker
   if (req.method === 'POST' && url.pathname === '/api/workers/heartbeat') {
     const body = await parseBody(req);
-    if (!verifyWorkerAuth(req.headers['authorization'], body.token)) {
+    if (!verifyWorkerAuth()) {
       return json(res, 401, { ok: false, error: 'Token de worker inválido' });
     }
 
@@ -734,9 +785,12 @@ async function api(req, res, url) {
   // POST /api/workers/poll — Worker obtiene tareas en cola
   if (req.method === 'POST' && url.pathname === '/api/workers/poll') {
     const body = await parseBody(req);
-    if (!verifyWorkerAuth(req.headers['authorization'], body.token)) {
+    if (!verifyWorkerAuth()) {
       return json(res, 401, { ok: false, error: 'Token de worker inválido' });
     }
+    const workerId = body.workerId || req.headers['x-worker-id'];
+    const workerObj = activeWorkers.get(workerId);
+    if (!workerObj || workerObj.status !== 'connected') return json(res, 404, { ok: false, error: 'Worker no registrado' });
 
     const queuedTask = state.tasks.find(t => t.status === 'queued');
     if (queuedTask) {
@@ -752,9 +806,12 @@ async function api(req, res, url) {
   const workerReportMatch = url.pathname.match(/^\/api\/workers\/tasks\/([^/]+)\/report$/);
   if (req.method === 'POST' && workerReportMatch) {
     const body = await parseBody(req);
-    if (!verifyWorkerAuth(req.headers['authorization'], body.token)) {
+    if (!verifyWorkerAuth()) {
       return json(res, 401, { ok: false, error: 'Token de worker inválido' });
     }
+    const workerId = body.workerId || req.headers['x-worker-id'];
+    const workerObj = activeWorkers.get(workerId);
+    if (!workerObj || workerObj.status !== 'connected') return json(res, 404, { ok: false, error: 'Worker no registrado' });
 
     const taskId = workerReportMatch[1];
     const task = state.tasks.find(t => t.id === taskId);
@@ -782,7 +839,9 @@ async function api(req, res, url) {
       activeWorkerName: activeWorkerObj ? activeWorkerObj.name : null,
       antigravityAdapterStatus: adapters.antigravity.status,
       antigravityConnected: adapters.antigravity.connected,
-      authenticatedUser: state.user?.name || 'Andres Sanabria'
+      authenticatedUser: state.user?.name || 'Andres Sanabria',
+      authentication: 'local',
+      ready: Boolean(activeWorkerObj)
     });
   }
 
@@ -911,17 +970,14 @@ async function api(req, res, url) {
 
   // GET /api/user
   if (req.method === 'GET' && url.pathname === '/api/user') {
-    ensureUserState();
     return json(res, 200, {
       ok: true,
-      authenticated: true,
+      authenticated: false,
+      authMode: 'local',
       user: state.user,
-      sessionToken: state.user.sessionToken,
-      sessionClaims: state.user.sessionClaims,
-      sessionSignature: state.user.sessionSignature,
-      connectionVerified: true,
+      connectionVerified: adapters.antigravity.connected,
       antigravityConnected: adapters.antigravity.connected,
-      workerStatus: state.worker.status
+      workerStatus: Array.from(activeWorkers.values()).some(w => w.status === 'connected') ? 'online' : 'offline'
     });
   }
 
@@ -946,8 +1002,10 @@ async function api(req, res, url) {
   }
   if (req.method === 'POST' && url.pathname === '/api/projects') {
     const body = await parseBody(req);
-    if (!body.name) return json(res, 400, { error: 'El nombre del proyecto es obligatorio' });
-    const project = { id: id('proj'), name: body.name, localPath: body.localPath || ROOT, githubUrl: body.githubUrl || '', branch: body.branch || 'main', status: 'connected', createdAt: now() };
+    if (!String(body.name || '').trim()) return json(res, 400, { error: 'El nombre del proyecto es obligatorio' });
+    const pathCheck = validateWorkspacePath(body.localPath || ROOT);
+    if (!pathCheck.ok) return json(res, 400, { ok: false, error: pathCheck.error });
+    const project = { id: id('proj'), name: String(body.name).trim(), localPath: pathCheck.resolved, githubUrl: String(body.githubUrl || '').trim(), branch: String(body.branch || 'main').trim(), status: 'connected', createdAt: now() };
     state.projects.unshift(project); event('success', `Proyecto conectado: ${project.name}`); persist(); return json(res, 201, project);
   }
   if (req.method === 'POST' && url.pathname === '/api/tasks') {
@@ -1140,19 +1198,24 @@ async function api(req, res, url) {
 }
 
 function serve(req, res) {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
 
   const url = new URL(req.url, `http://${req.headers.host}`);
+  ensureCsrfCookie(req, res);
   if (url.pathname.startsWith('/api/')) return api(req, res, url).catch((err) => json(res, 400, { error: 'Solicitud inválida', details: err.message }));
   const requested = url.pathname === '/' ? '/index.html' : url.pathname;
-  const file = path.normalize(path.join(PUBLIC_DIR, requested));
-  if (!file.startsWith(PUBLIC_DIR)) return json(res, 403, { error: 'Acceso denegado' });
+  const file = path.resolve(PUBLIC_DIR, `.${requested}`);
+  if (!isWithin(PUBLIC_DIR, file)) return json(res, 403, { error: 'Acceso denegado' });
   fs.readFile(file, (err, data) => {
     if (err) return json(res, 404, { error: 'No encontrado' });
     const ext = path.extname(file); const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.svg': 'image/svg+xml' };
-    res.writeHead(200, { 'Content-Type': `${types[ext] || 'application/octet-stream'}; charset=utf-8` }); res.end(data);
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': `${types[ext] || 'application/octet-stream'}; charset=utf-8` }); res.end(data);
   });
+}
+
+function isWithin(base, candidate) {
+  const relative = path.relative(path.resolve(base), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 const server = http.createServer(serve);
@@ -1160,4 +1223,4 @@ if (require.main === module) {
   server.listen(PORT, '127.0.0.1', () => console.log(`Dashboard listo en http://127.0.0.1:${PORT}`));
 }
 
-module.exports = { server, PORT, activeWorkers, FORGE_WORKER_TOKEN, FORGE_PROJECTS_ROOT, validateWorkspacePath };
+module.exports = { server, PORT, activeWorkers, FORGE_WORKER_TOKEN, FORGE_PROJECTS_ROOT, validateWorkspacePath, isWithin, runRepositoryTests, antigravityAdapter };

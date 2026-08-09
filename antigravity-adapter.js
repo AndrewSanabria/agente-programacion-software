@@ -1,174 +1,109 @@
 const http = require('node:http');
 const https = require('node:https');
 
-/**
- * Adaptador Antigravity Real
- * Interfaz formal para conectarse a un runtime/engine de Antigravity via HTTP/HTTPS.
- * Solo marca el estado como 'connected' si healthCheck() responde exitosamente con credenciales válidas.
- */
 class AntigravityAdapter {
   constructor(config = {}) {
     this.name = 'Antigravity Engine';
     this.url = config.url || process.env.ANTIGRAVITY_URL || null;
     this.token = config.token || process.env.ANTIGRAVITY_TOKEN || null;
-    this.status = 'disconnected';
+    this.status = this.url ? 'disconnected' : 'missing_credentials';
     this.connected = false;
     this.lastHealthCheck = null;
     this.lastError = null;
   }
 
-  /**
-   * Configura las credenciales e intenta realizar el handshake inicial.
-   */
   async connect(options = {}) {
     if (options.url) this.url = options.url;
     if (options.token) this.token = options.token;
+    return this.healthCheck();
+  }
 
+  request(method, pathname, body = null, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+      let parsed;
+      try { parsed = new URL(this.url); }
+      catch (error) { reject(new Error(`URL inválida: ${error.message}`)); return; }
+      const requestModule = parsed.protocol === 'https:' ? https : http;
+      const basePath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/$/, '');
+      const payload = body === null ? null : JSON.stringify(body);
+      const requestPath = `${basePath}${pathname.startsWith('/') ? pathname : `/${pathname}`}`;
+      const headers = {
+        Accept: 'application/json',
+        ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
+        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {})
+      };
+      const req = requestModule.request({
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: requestPath,
+        method,
+        headers,
+        timeout
+      }, res => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          let parsedBody = null;
+          try { parsedBody = data ? JSON.parse(data) : {}; } catch (_) { parsedBody = { raw: data }; }
+          resolve({ statusCode: res.statusCode || 0, body: parsedBody });
+        });
+      });
+      req.on('error', reject);
+      req.on('timeout', () => req.destroy(new Error('Timeout al conectar con Antigravity')));
+      if (payload) req.write(payload);
+      req.end();
+    });
+  }
+
+  async healthCheck() {
     if (!this.url) {
       this.status = 'missing_credentials';
       this.connected = false;
       this.lastError = 'ANTIGRAVITY_URL no configurado';
-      return { ok: false, status: this.status, error: this.lastError };
+      return { ok: false, status: this.status, connected: false, error: this.lastError };
     }
-
-    return await this.healthCheck();
+    try {
+      const response = await this.request('GET', '/health', null, 4000);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        this.status = 'connected';
+        this.connected = true;
+        this.lastHealthCheck = new Date().toISOString();
+        this.lastError = null;
+        return { ok: true, status: this.status, statusCode: response.statusCode };
+      }
+      this.status = 'disconnected';
+      this.connected = false;
+      this.lastError = `HTTP ${response.statusCode}: ${JSON.stringify(response.body).slice(0, 150)}`;
+      return { ok: false, status: this.status, connected: false, error: this.lastError };
+    } catch (error) {
+      this.status = 'disconnected';
+      this.connected = false;
+      this.lastError = error.message;
+      return { ok: false, status: this.status, connected: false, error: this.lastError };
+    }
   }
 
-  /**
-   * Realiza una petición real al endpoint de salud del engine.
-   */
-  healthCheck() {
-    return new Promise((resolve) => {
-      if (!this.url) {
-        this.status = 'missing_credentials';
-        this.connected = false;
-        return resolve({ ok: false, status: this.status, error: 'Sin URL configurada' });
-      }
-
-      try {
-        const parsedUrl = new URL(this.url);
-        const requestModule = parsedUrl.protocol === 'https:' ? https : http;
-        const options = {
-          hostname: parsedUrl.hostname,
-          port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-          path: parsedUrl.pathname === '/' ? '/health' : parsedUrl.pathname,
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-            ...(this.token ? { 'Authorization': `Bearer ${this.token}` } : {})
-          },
-          timeout: 4000
-        };
-
-        const req = requestModule.request(options, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              this.status = 'connected';
-              this.connected = true;
-              this.lastHealthCheck = new Date().toISOString();
-              this.lastError = null;
-              resolve({ ok: true, status: 'connected', statusCode: res.statusCode });
-            } else {
-              this.status = 'disconnected';
-              this.connected = false;
-              this.lastError = `HTTP ${res.statusCode}: ${data.slice(0, 150)}`;
-              resolve({ ok: false, status: 'disconnected', error: this.lastError });
-            }
-          });
-        });
-
-        req.on('error', (err) => {
-          this.status = 'disconnected';
-          this.connected = false;
-          this.lastError = `Error de red: ${err.message}`;
-          resolve({ ok: false, status: 'disconnected', error: this.lastError });
-        });
-
-        req.on('timeout', () => {
-          req.destroy();
-          this.status = 'disconnected';
-          this.connected = false;
-          this.lastError = 'Timeout al conectar con Antigravity';
-          resolve({ ok: false, status: 'disconnected', error: this.lastError });
-        });
-
-        req.end();
-      } catch (e) {
-        this.status = 'disconnected';
-        this.connected = false;
-        this.lastError = `URL inválida: ${e.message}`;
-        resolve({ ok: false, status: 'disconnected', error: this.lastError });
-      }
-    });
-  }
-
-  /**
-   * Envía una tarea al engine real de Antigravity.
-   */
   async sendTask(taskPayload) {
     const health = await this.healthCheck();
-    if (!health.ok) {
-      throw new Error(`No se puede enviar tarea: Adaptador Antigravity ${this.status} (${this.lastError || 'Sin conexión'})`);
+    if (!health.ok) throw new Error(`No se puede enviar tarea: Antigravity ${this.status} (${this.lastError || 'sin conexión'})`);
+    const response = await this.request('POST', '/api/tasks', taskPayload);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(`Antigravity rechazó la tarea con HTTP ${response.statusCode}`);
     }
-
-    return new Promise((resolve, reject) => {
-      try {
-        const parsedUrl = new URL(this.url);
-        const requestModule = parsedUrl.protocol === 'https:' ? https : http;
-        const payload = JSON.stringify(taskPayload);
-
-        const options = {
-          hostname: parsedUrl.hostname,
-          port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-          path: '/api/tasks',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(payload),
-            ...(this.token ? { 'Authorization': `Bearer ${this.token}` } : {})
-          },
-          timeout: 10000
-        };
-
-        const req = requestModule.request(options, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            try {
-              const json = JSON.parse(data);
-              resolve(json);
-            } catch (e) {
-              resolve({ ok: res.statusCode < 300, raw: data });
-            }
-          });
-        });
-
-        req.on('error', reject);
-        req.write(payload);
-        req.end();
-      } catch (err) {
-        reject(err);
-      }
-    });
+    return response.body;
   }
 
-  /**
-   * Cancela una tarea en ejecución.
-   */
   async cancelTask(taskId) {
     if (!this.connected) return { ok: false, error: 'Adaptador desconectado' };
-    return { ok: true, taskId, status: 'cancelled' };
+    const response = await this.request('POST', `/api/tasks/${encodeURIComponent(taskId)}/cancel`);
+    return { ...response.body, ok: response.statusCode >= 200 && response.statusCode < 300 };
   }
 
-  /**
-   * Cierra la conexión del adaptador.
-   */
   disconnect() {
     this.status = 'disconnected';
     this.connected = false;
-    return { ok: true, status: 'disconnected' };
+    return { ok: true, status: this.status };
   }
 
   getStatusInfo() {
