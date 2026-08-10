@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
     activeProjectId: null,
     activeConversationId: null,
     activeRunId: null,
+    runPollTimer: null,
     planMode: true,
     eventSource: null
   };
@@ -109,8 +110,11 @@ document.addEventListener('DOMContentLoaded', () => {
         appState.messages = data.messages;
         appState.runs = data.runs;
         if (data.runs && data.runs.length > 0) {
-          appState.activeRunId = data.runs[0].id;
-          subscribeToRunEvents(data.runs[0].id);
+          const latestRunId = data.runs[0].id;
+          if (appState.activeRunId !== latestRunId) {
+            appState.activeRunId = latestRunId;
+            subscribeToRunEvents(latestRunId);
+          }
         }
         renderChatThread();
         renderRightInspector();
@@ -120,6 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ===== SSE STREAMING ENGINE =====
   function subscribeToRunEvents(runId) {
+    if (appState.runPollTimer) clearInterval(appState.runPollTimer);
     if (appState.eventSource) {
       appState.eventSource.close();
     }
@@ -130,6 +135,15 @@ document.addEventListener('DOMContentLoaded', () => {
         handleRunEvent(evt);
       };
     } catch (e) {}
+    appState.runPollTimer = setInterval(async () => {
+      const latest = appState.runs?.find(run => run.id === runId);
+      if (latest && ['completed', 'blocked', 'failed', 'cancelled', 'rejected', 'approved'].includes(latest.status)) {
+        clearInterval(appState.runPollTimer);
+        appState.runPollTimer = null;
+        return;
+      }
+      if (appState.activeConversationId) await fetchConversationDetails(appState.activeConversationId);
+    }, 1500);
   }
 
   function handleRunEvent(evt) {
@@ -215,7 +229,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <p style="font-size:16px;font-weight:600;color:#fff;">Codex Agentic IDE</p>
         <p style="font-size:13px;margin-top:4px;">Proyecto activo: <strong style="color:var(--primary);">${proj ? proj.name : 'Ninguno'}</strong></p>
         <p style="font-size:12.5px;margin-top:10px;max-width:420px;text-align:center;line-height:1.5;">
-          Conversación vacía. Escribe una instrucción abajo para iniciar la orquestación multimodelo (GPT-5.6 Luna + Claude 3.5 + Antigravity).
+          Conversación vacía. Escribe una instrucción abajo para que OpenAI diseñe el plan y Antigravity lo ejecute.
         </p>
       </div>
     `;
@@ -278,6 +292,9 @@ document.addEventListener('DOMContentLoaded', () => {
       // --- ASSISTANT MESSAGE ---
       if (msg.role === 'assistant') {
         const isReview = msg.kind === 'review' && msg.review;
+        const isOrchestration = msg.kind === 'orchestration' && msg.orchestration;
+        const runForMessage = appState.runs.find(run => run.messageId === msg.id);
+        const isPendingExecution = msg.kind === 'running';
         const isBlocked = msg.kind === 'blocked';
         const isError = msg.kind === 'error';
 
@@ -285,13 +302,32 @@ document.addEventListener('DOMContentLoaded', () => {
         let badgeLabel = '💬 RESPUESTA';
         let badgeClass = 'secondary';
         if (isReview) { badgeLabel = '🔍 REVISIÓN & DIAGNÓSTICO'; badgeClass = 'secondary'; }
+        else if (isPendingExecution) { badgeLabel = '🧠 PENSANDO / COORDINANDO'; badgeClass = 'secondary'; }
+        else if (isOrchestration) { badgeLabel = '🧠 PLAN OPENAI → ANTIGRAVITY'; badgeClass = 'secondary'; }
         else if (isBlocked) { badgeLabel = '🚫 BLOQUEADO'; badgeClass = 'warning'; }
         else if (isError) { badgeLabel = '❌ ERROR'; badgeClass = 'danger'; }
 
         // Content body
         let contentHtml = '';
 
-        if (isReview && msg.review) {
+        if (isOrchestration || isPendingExecution) {
+          const plan = msg.orchestration || {};
+          const fileLines = (plan.files || []).map(file => '<li><code>' + file.action + '</code> <code>' + file.path + '</code> — ' + file.reason + '</li>').join('');
+          const instructionLines = (plan.instructions || []).map(instruction => '<li>' + instruction + '</li>').join('');
+          const criteriaLines = (plan.acceptanceCriteria || []).map(criteria => '<li>' + criteria + '</li>').join('');
+          const activityLines = (runForMessage?.activity || []).map(activity => '<li><strong>' + activity.agent + '</strong> · ' + activity.stage + ' — ' + activity.message + '</li>').join('');
+          contentHtml = '<div style="font-size:13px;line-height:1.6;">'
+            + '<strong style="color:#a5b4fc;display:block;margin-bottom:6px;">🧠 OpenAI controla el ciclo completo de ingeniería</strong>'
+            + (plan.objective ? '<p><strong>Objetivo:</strong> ' + plan.objective + '</p>' : '<p>OpenAI está analizando el objetivo y el contexto del repositorio...</p>')
+            + (plan.summary ? '<p><strong>Resumen:</strong> ' + plan.summary + '</p>' : '')
+            + '<div style="margin-top:10px;"><strong>⚡ Instrucciones para Antigravity:</strong><ol>' + instructionLines + '</ol></div>'
+            + '<div style="margin-top:10px;"><strong>📄 Archivos:</strong><ul>' + (fileLines || '<li>Inspección previa requerida</li>') + '</ul></div>'
+            + '<div style="margin-top:10px;"><strong>✅ Criterios de aceptación:</strong><ul>' + (criteriaLines || '<li>Resultado verificable en worktree aislado</li>') + '</ul></div>'
+            + '<p style="color:var(--text-dim);margin-top:10px;">Verificación: ' + ((plan.verification || []).join(', ') || 'pendiente') + '. El worker ejecutará el parche solo en un worktree aislado.</p>'
+            + '<div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;"><strong>📡 Actividad de agentes:</strong><ol>' + (activityLines || '<li>Esperando actividad...</li>') + '</ol></div>'
+            + (runForMessage?.executorResult ? '<p style="color:var(--success);margin-top:10px;"><strong>Resultado:</strong> ' + runForMessage.executorResult + '</p>' : '')
+            + '</div>';
+        } else if (isReview && msg.review) {
           const review = msg.review;
           const findingsHtml = (review.findings || []).map(f => {
             const severityColors = {
@@ -347,11 +383,11 @@ document.addEventListener('DOMContentLoaded', () => {
             <!-- REVIEWER REASONING -->
             <div style="font-size:12px;color:var(--text-muted);margin-top:10px;line-height:1.5;background:rgba(0,0,0,0.25);padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);">
               <div style="margin-bottom:6px;">
-                <strong style="color:#a5b4fc;display:block;margin-bottom:2px;">🧠 GPT-5.6 Luna Architect:</strong>
-                <p style="color:var(--text-main);">Revisión completada en modo solo lectura. Se inspeccionaron ${review.inspectedFiles?.length || 0} archivos, ${review.inspectedDocuments?.length || 0} documento(s) y se verificó el estado Git.</p>
+                <strong style="color:#a5b4fc;display:block;margin-bottom:2px;">🧠 OpenAI Principal Engineer:</strong>
+                <p style="color:var(--text-main);">OpenAI revisó ${review.inspectedFiles?.length || 0} archivos, ${review.inspectedDocuments?.length || 0} documento(s) y verificó el estado Git.</p>
               </div>
               <div style="border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
-                <strong style="color:#fbbf24;display:block;margin-bottom:2px;">🛡️ Claude 3.5 Reviewer:</strong>
+                <strong style="color:#fbbf24;display:block;margin-bottom:2px;">🔍 OpenAI Final Reviewer:</strong>
                 <p style="color:var(--text-main);">Se encontraron ${review.findings?.length || 0} hallazgo(s). ${(review.findings || []).filter(f => f.severity === 'critical' || f.severity === 'high').length} requieren atención inmediata. No se modificaron archivos.</p>
               </div>
             </div>
@@ -366,7 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="chat-msg-avatar" style="background:var(--primary-glow);color:#fff;">✨</div>
             <div class="chat-msg-body">
               <div class="chat-msg-meta">
-                <strong style="color:#a5b4fc;">✨ Antigravity AI (Líder Orquestador)</strong>
+                <strong style="color:#a5b4fc;">🧠 OpenAI Orquestador</strong>
                 <span class="chat-msg-time">${timeStr}</span>
                 <span class="badge ${badgeClass}" style="margin-left:8px;font-size:10px;">${badgeLabel}</span>
               </div>
@@ -396,7 +432,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const isReview = activeRun.intent === 'review';
-    const statusLabel = activeRun.status === 'completed' ? '✅ Completado' : activeRun.status === 'running' ? '⚡ En progreso' : activeRun.status === 'blocked' ? '🚫 Bloqueado' : activeRun.status === 'approved' ? '✓ Aprobado' : activeRun.status === 'rejected' ? '✗ Rechazado' : activeRun.status;
+    const isOrchestration = activeRun.intent === 'orchestration';
+    const statusLabel = activeRun.status === 'completed' ? '✅ Completado' : activeRun.status === 'running' ? '⚡ En progreso' : activeRun.status === 'queued' ? '🧠 Plan en cola para Antigravity' : activeRun.status === 'blocked' ? '🚫 Bloqueado' : activeRun.status === 'approved' ? '✓ Aprobado' : activeRun.status === 'rejected' ? '✗ Rechazado' : activeRun.status;
     const promptText = activeRun.archReasoning ? activeRun.archReasoning.slice(0, 40) : (isReview ? 'Revisión del repositorio' : 'Run activo');
     const filesList = (activeRun.review && activeRun.review.inspectedFiles) ? activeRun.review.inspectedFiles.slice(0, 8) : [];
 
@@ -407,14 +444,20 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="plan-item">📊 Estado: ${statusLabel}</div>
     `;
 
-    progressRatioBadge.textContent = isReview ? '3/3' : (activeRun.progress > 0 ? `${activeRun.progress}/100` : '0/0');
-    completedTasksLabel.textContent = isReview ? '3 completados' : `${activeRun.progress}% completado`;
+    progressRatioBadge.textContent = isReview ? '3/3' : `${activeRun.progress}/100`;
+    completedTasksLabel.textContent = isReview ? '3 completados' : (isOrchestration ? `${activeRun.progress}% ejecutado` : `${activeRun.progress}% completado`);
 
     checklistItemsContainer.innerHTML = `
       <!-- PROGRESO -->
+      ${isOrchestration ? `
+      <div class="check-item"><span class="check-icon-circle">${activeRun.progress >= 10 ? '✓' : '○'}</span><span>OpenAI generó el plan estructurado</span></div>
+      <div class="check-item"><span class="check-icon-circle">${activeRun.progress >= 55 ? '✓' : '○'}</span><span>Antigravity aplicó el parche en worktree aislado</span></div>
+      <div class="check-item"><span class="check-icon-circle">${activeRun.progress >= 100 ? '✓' : '○'}</span><span>OpenAI revisó criterios y verificaciones</span></div>
+      ` : `
       <div class="check-item"><span class="check-icon-circle">✓</span><span>Inspeccionar el repositorio y definir el flujo</span></div>
       <div class="check-item"><span class="check-icon-circle">✓</span><span>Implementar revisión real basada en evidencia</span></div>
       <div class="check-item"><span class="check-icon-circle">✓</span><span>Actualizar la interfaz con hallazgos y evidencias</span></div>
+      `}
       
       <!-- RESULTADOS DE ARCHIVOS -->
       ${filesList.length > 0 ? `
@@ -443,7 +486,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const text = chatInputTextarea.value.trim();
     if (!text) return;
     chatInputTextarea.value = '';
-    const selectedModel = selectAiModel ? selectAiModel.value : 'Antigravity AI (Líder Orquestador)';
+    const selectedModel = selectAiModel ? selectAiModel.value : 'OpenAI GPT-5.6 Luna (Orquestador)';
     const targetProjectId = appState.activeProjectId || (appState.projects[0] ? appState.projects[0].id : 'proj-1');
     const nowTime = new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
 
@@ -460,9 +503,9 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="chat-msg chat-msg-ai" id="thinking-indicator-card">
           <div class="chat-msg-avatar" style="background:var(--primary-glow);color:#fff;">✨</div>
           <div class="chat-msg-body">
-            <div class="chat-msg-meta"><strong style="color:#a5b4fc;">✨ Antigravity AI (Líder Orquestador)</strong></div>
+            <div class="chat-msg-meta"><strong style="color:#a5b4fc;">🧠 OpenAI Orquestador</strong></div>
             <div class="chat-msg-content" style="color:#fbbf24;font-size:13px;padding:8px 0;">
-                  <span style="animation:pulse 1.2s infinite;display:inline-block;">🧠 Pensando y coordinando al equipo de agentes (GPT-5.6 Luna, Claude 3.5, Worker Local)...</span>
+                  <span style="animation:pulse 1.2s infinite;display:inline-block;">🧠 OpenAI diseña instrucciones específicas y coordina a Antigravity Executor...</span>
             </div>
           </div>
         </div>
@@ -558,17 +601,15 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!data.ok) return;
       data.agents.forEach(agent => {
         // Mapear IDs del API a IDs de los badges en el HTML
-        const badgeIdMap = { 'gpt-5.6-luna': 'gpt', 'claude-3.5': 'claude', 'antigravity': 'antigravity', 'antigravity-engine': 'antigravity', 'worker-local': 'worker-local', 'zai-glm': 'zai-glm' };
+        const badgeIdMap = { 'gpt-5.6-luna': 'gpt', 'antigravity': 'antigravity', 'antigravity-engine': 'antigravity', 'worker-local': 'worker-local' };
         const badgeKey = badgeIdMap[agent.id] || agent.id;
         const badge = document.getElementById(`agent-badge-${badgeKey}`);
         if (!badge) return;
         const icon = agent.status === 'connected' ? '🟢'
                    : agent.status === 'simulated' ? '🟡'
                    : '🔴';
-        const label = agent.id === 'gpt-5.6-luna' ? `🧠 GPT-5.6 Luna (Arquitecto) ${icon}`
-                    : agent.id === 'claude-3.5' ? `🛡️ Claude 3.5 (Revisor) ${icon}`
-                    : agent.id === 'zai-glm' ? `🤖 Z.ai GLM-5.2 ${icon}`
-                    : `✨ Antigravity (Líder) ${icon}`;
+        const label = agent.id === 'gpt-5.6-luna' ? `🧠 OpenAI Orquestador · Arquitecto · Revisor ${icon}`
+                    : `⚡ Antigravity Executor ${icon}`;
         badge.textContent = label;
         badge.setAttribute('data-status', agent.status);
       });
@@ -589,30 +630,16 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch { /* silently fail — la UI muestra el último estado conocido */ }
   }
 
-  // ===== API KEYS CONFIG MODAL (OpenAI + Z.ai) =====
-  const zaiModal = document.getElementById('zai-config-modal');
-  const zaiApiKeyInput = document.getElementById('zai-api-key-input');
-  const zaiConfigStatus = document.getElementById('zai-config-status');
-  const zaiConnectBtn = document.getElementById('zai-connect-btn');
-  const zaiDisconnectBtn = document.getElementById('zai-disconnect-btn');
+  // ===== OPENAI API KEY CONFIG MODAL =====
+  const apiModal = document.getElementById('api-config-modal');
   const openaiApiKeyInput = document.getElementById('openai-api-key-input');
   const openaiConfigStatus = document.getElementById('openai-config-status');
   const openaiConnectBtn = document.getElementById('openai-connect-btn');
   const openaiDisconnectBtn = document.getElementById('openai-disconnect-btn');
 
-  // Tab switching
-  document.querySelectorAll('.modal-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.modal-tab-content').forEach(c => c.classList.remove('active'));
-      tab.classList.add('active');
-      document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
-    });
-  });
-
   if (document.getElementById('btn-settings')) {
     document.getElementById('btn-settings').addEventListener('click', () => {
-      zaiModal.style.display = 'flex';
+      apiModal.style.display = 'flex';
       fetch('/api/agents').then(r => r.json()).then(data => {
         // Load OpenAI status
         const openai = data.agents?.find(a => a.id === 'gpt-5.6-luna');
@@ -629,27 +656,12 @@ document.addEventListener('DOMContentLoaded', () => {
           openaiConfigStatus.textContent = openai?.status === 'auth_error' ? '🔴 Error de autenticación' : '⚠️ No configurado';
           openaiConfigStatus.style.color = openai?.status === 'auth_error' ? 'var(--danger)' : 'var(--text-dim)';
         }
-        // Load Z.ai status
-        const zai = data.agents?.find(a => a.id === 'zai-glm');
-        if (zai?.status === 'connected') {
-          zaiApiKeyInput.value = '••••••••••••';
-          zaiDisconnectBtn.style.display = 'inline-block';
-          zaiConnectBtn.textContent = 'Actualizar';
-          zaiConfigStatus.textContent = '🟢 Conectado';
-          zaiConfigStatus.style.color = 'var(--success)';
-        } else {
-          zaiApiKeyInput.value = '';
-          zaiDisconnectBtn.style.display = 'none';
-          zaiConnectBtn.textContent = 'Conectar';
-          zaiConfigStatus.textContent = zai?.status === 'auth_error' ? '🔴 Error de autenticación' : '⚠️ No configurado';
-          zaiConfigStatus.style.color = zai?.status === 'auth_error' ? 'var(--danger)' : 'var(--text-dim)';
-        }
       });
     });
   }
 
-  document.getElementById('zai-modal-close').addEventListener('click', () => zaiModal.style.display = 'none');
-  zaiModal.addEventListener('click', (e) => { if (e.target === zaiModal) zaiModal.style.display = 'none'; });
+  document.getElementById('api-modal-close').addEventListener('click', () => apiModal.style.display = 'none');
+  apiModal.addEventListener('click', (e) => { if (e.target === apiModal) apiModal.style.display = 'none'; });
 
   // ===== OpenAI connect / disconnect =====
   openaiConnectBtn.addEventListener('click', async () => {
@@ -686,44 +698,6 @@ document.addEventListener('DOMContentLoaded', () => {
     openaiDisconnectBtn.style.display = 'none';
     openaiApiKeyInput.value = '';
     openaiConnectBtn.textContent = 'Conectar';
-    fetchAgentStatus();
-  });
-
-  // ===== Z.ai connect / disconnect =====
-  zaiConnectBtn.addEventListener('click', async () => {
-    const key = zaiApiKeyInput.value.trim();
-    if (!key || key === '••••••••••••') { zaiConfigStatus.textContent = '⚠️ Ingresa una API Key'; return; }
-    zaiConfigStatus.textContent = '⏳ Conectando...';
-    zaiConnectBtn.disabled = true;
-    try {
-      const res = await fetch('/api/adapters/zai/configure', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: key })
-      });
-      const data = await res.json();
-      if (data.ok) {
-        zaiConfigStatus.textContent = '🟢 Conectado exitosamente';
-        zaiConfigStatus.style.color = 'var(--success)';
-        zaiDisconnectBtn.style.display = 'inline-block';
-        zaiApiKeyInput.value = '••••••••••••';
-        zaiConnectBtn.textContent = 'Actualizar';
-        fetchAgentStatus();
-      } else {
-        zaiConfigStatus.textContent = `🔴 ${data.error}`;
-        zaiConfigStatus.style.color = 'var(--danger)';
-      }
-    } catch { zaiConfigStatus.textContent = '🔴 Error de conexión'; zaiConfigStatus.style.color = 'var(--danger)'; }
-    zaiConnectBtn.disabled = false;
-  });
-
-  zaiDisconnectBtn.addEventListener('click', async () => {
-    await fetch('/api/adapters/zai/configure', { method: 'DELETE' });
-    zaiConfigStatus.textContent = '⚠️ Desconectado';
-    zaiConfigStatus.style.color = 'var(--text-dim)';
-    zaiDisconnectBtn.style.display = 'none';
-    zaiApiKeyInput.value = '';
-    zaiConnectBtn.textContent = 'Conectar';
     fetchAgentStatus();
   });
 
