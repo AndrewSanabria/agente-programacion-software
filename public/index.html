@@ -148,10 +148,7 @@
 
             <div class="toolbar-right">
               <select id="select-ai-model" class="model-select-pill" style="border-color:var(--primary);font-weight:600;">
-                <option value="Antigravity AI (Líder Orquestador)">✨ Antigravity AI (Líder Orquestador)</option>
-                <option value="Z.ai GLM-5.2">🤖 Z.ai GLM-5.2 (AI Engine)</option>
-                <option value="GPT-5.6 Luna (Arquitectura)">🧠 GPT-5.6 Luna (Arquitecto)</option>
-                <option value="Claude 3.5 Sonnet (Riesgos)">🛡️ Claude 3.5 (Revisor OWASP)</option>
+                <option value="OpenAI GPT-5.6 Luna (Orquestador)">🧠 OpenAI GPT-5.6 Luna (Orquestador · Ingeniero principal · Arquitecto · Revisor)</option>
               </select>
 
               <div class="toggle-pill active">
@@ -216,10 +213,8 @@
           <h3>Equipo de Agentes</h3>
         </div>
         <div class="agents-badges-row" id="agents-badges-row">
-          <span class="sub-agent agy" id="agent-badge-antigravity" data-status="loading" style="background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid var(--primary);">✨ Antigravity ⏳</span>
-          <span class="sub-agent gpt" id="agent-badge-gpt" data-status="loading">🧠 GPT-5.6 Luna ⏳</span>
-          <span class="sub-agent claude" id="agent-badge-claude" data-status="loading">🛡️ Claude 3.5 ⏳</span>
-          <span class="sub-agent zai" id="agent-badge-zai-glm" data-status="loading">🤖 Z.ai GLM-5.2 ⏳</span>
+          <span class="sub-agent agy" id="agent-badge-antigravity" data-status="loading" style="background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid var(--primary);">⚡ Antigravity Executor ⏳</span>
+          <span class="sub-agent gpt" id="agent-badge-gpt" data-status="loading">🧠 OpenAI Orquestador ⏳</span>
         </div>
       </div>
 
@@ -227,20 +222,13 @@
 
   </div>
 
-  <!-- API Keys Configuration Modal (OpenAI + Z.ai) -->
-  <div id="zai-config-modal" class="modal-overlay" style="display:none;">
+  <!-- OpenAI API Key Configuration Modal -->
+  <div id="api-config-modal" class="modal-overlay" style="display:none;">
     <div class="modal-card" style="width:480px;">
       <div class="modal-header">
-        <h3>🔑 Configurar API Keys</h3>
-        <button class="modal-close" id="zai-modal-close">✕</button>
+        <h3>🔑 Configurar OpenAI</h3>
+        <button class="modal-close" id="api-modal-close">✕</button>
       </div>
-      <!-- Tabs -->
-      <div class="modal-tabs">
-        <button class="modal-tab active" data-tab="openai">🧠 OpenAI GPT-5.6 Luna</button>
-        <button class="modal-tab" data-tab="zai">🤖 Z.ai GLM-5.2</button>
-      </div>
-
-      <!-- OpenAI Tab -->
       <div class="modal-tab-content active" id="tab-openai">
         <div class="modal-body">
           <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px;">
@@ -254,23 +242,6 @@
         <div class="modal-footer">
           <button class="btn-secondary" id="openai-disconnect-btn" style="display:none;">Desconectar</button>
           <button class="btn-primary" id="openai-connect-btn">Conectar</button>
-        </div>
-      </div>
-
-      <!-- Z.ai Tab -->
-      <div class="modal-tab-content" id="tab-zai">
-        <div class="modal-body">
-          <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px;">
-            Ingresa tu API Key de <a href="https://z.ai/model-api" target="_blank" style="color:var(--primary);">Z.ai</a> para habilitar respuestas de IA reales.
-          </p>
-          <label for="zai-api-key-input" style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:4px;">API Key</label>
-          <input type="password" id="zai-api-key-input" class="modal-input"
-            placeholder="zai-xxxxxxxxxxxxxxxx" autocomplete="off" />
-          <div id="zai-config-status" style="margin-top:10px;font-size:12px;color:var(--text-dim);"></div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn-secondary" id="zai-disconnect-btn" style="display:none;">Desconectar</button>
-          <button class="btn-primary" id="zai-connect-btn">Conectar</button>
         </div>
       </div>
     </div>

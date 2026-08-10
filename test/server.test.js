@@ -252,3 +252,93 @@ test('13. Configura OpenAI, valida la clave y enruta el chat por Responses API s
     await new Promise(resolve => remote.close(resolve));
   }
 });
+
+test('14. Z.ai fue retirado del registro y de sus rutas API', async () => {
+  const agents = await request('/api/agents');
+  assert.equal(agents.status, 200);
+  assert.equal(agents.body.agents.some(agent => agent.id === 'zai-glm'), false);
+
+  const removedRoute = await request('/api/adapters/zai/test');
+  assert.equal(removedRoute.status, 404);
+});
+
+test('15. OpenAI devuelve un plan estructurado y lo encola para Antigravity', async () => {
+  let structuredRequest = false;
+  const remote = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'GET' && req.url === '/v1/models') return res.end(JSON.stringify({ object: 'list', data: [] }));
+      if (req.method === 'POST' && req.url === '/v1/responses') {
+        const body = JSON.parse(raw);
+        structuredRequest = body.text?.format?.name === 'antigravity_execution_plan';
+        return res.end(JSON.stringify({ output_text: JSON.stringify({
+          summary: 'Plan de ejecución verificable',
+          objective: 'Corregir el módulo de prueba',
+          instructions: ['Inspeccionar el archivo', 'Aplicar el parche y validar sintaxis'],
+          files: [{ path: 'server.js', action: 'modify', reason: 'Aplicar la corrección solicitada' }],
+          patch: 'diff --git a/ORCHESTRATION_TEST.txt b/ORCHESTRATION_TEST.txt\nnew file mode 100644\n--- /dev/null\n+++ b/ORCHESTRATION_TEST.txt\n@@ -0,0 +1 @@\n+test plan\n',
+          verification: ['syntax'],
+          acceptanceCriteria: ['La sintaxis debe ser válida'],
+          riskNotes: [],
+          requiresReview: false
+        }) }));
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { message: 'not found' } }));
+    });
+  });
+  await new Promise(resolve => remote.listen(0, '127.0.0.1', resolve));
+  const previousBaseUrl = adapters.openai.baseUrl;
+  try {
+    adapters.openai.baseUrl = `http://127.0.0.1:${remote.address().port}/v1/`;
+    const configured = await request('/api/adapters/openai/configure', 'POST', { apiKey: 'sk-test-orchestrator' }, browserHeaders());
+    assert.equal(configured.status, 200);
+
+    const response = await request('/api/chat', 'POST', {
+      message: 'Corrige el módulo de prueba y ejecuta la verificación',
+      model: 'GPT-5.6 Luna'
+    }, browserHeaders());
+    assert.equal(response.status, 201);
+    assert.equal(response.body.run.intent, 'orchestration');
+    let stateResponse;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      stateResponse = await request('/api/state');
+      const currentRun = stateResponse.body.runs.find(item => item.id === response.body.run.id);
+      if (currentRun?.orchestration && currentRun?.status === 'queued') break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    const currentRun = stateResponse.body.runs.find(item => item.id === response.body.run.id);
+    assert.equal(currentRun.orchestration.objective, 'Corregir el módulo de prueba');
+    assert.equal(currentRun.status, 'queued');
+    const task = stateResponse.body.tasks.find(item => item.id === currentRun.taskId);
+    assert.equal(task.agent, 'OpenAI Orchestrator');
+    assert.equal(task.intent, 'orchestrate');
+    assert.equal(structuredRequest, true);
+
+    let cancelPromise;
+    const streamEvents = await new Promise((resolve, reject) => {
+      const stream = http.get({ hostname: '127.0.0.1', port: TEST_PORT, path: `/api/runs/${response.body.run.id}/events` }, res => {
+        let raw = '';
+        let cancelSent = false;
+        res.on('data', chunk => {
+          raw += chunk;
+          if (!cancelSent && raw.includes('"type":"state"')) {
+            cancelSent = true;
+            cancelPromise = request(`/api/runs/${response.body.run.id}/cancel`, 'POST', null, browserHeaders());
+          }
+        });
+        res.on('end', () => resolve(parseSse(raw)));
+      });
+      stream.on('error', reject);
+    });
+    await cancelPromise;
+    assert.ok(streamEvents.some(item => item.type === 'state' && item.run.activity?.length > 0));
+    assert.equal(streamEvents.at(-1).type, 'done');
+  } finally {
+    await request('/api/adapters/openai/configure', 'DELETE', null, browserHeaders());
+    adapters.openai.baseUrl = previousBaseUrl;
+    await new Promise(resolve => remote.close(resolve));
+  }
+});

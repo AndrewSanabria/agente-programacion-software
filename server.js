@@ -14,6 +14,61 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const PORT = Number(process.env.PORT || 4173);
 
 const FORGE_WORKER_TOKEN = getWorkerToken();
+const ADAPTER_KEYS_FILE = path.join(DATA_DIR, '.adapter-keys');
+
+// ===== ADAPTER KEY PERSISTENCE =====
+// Cifra API keys con AES-256-GCM usando el worker token como derivación de clave.
+// Las keys sobreviven reinicios del servidor sin exponerse en texto plano.
+function deriveKeyEncryptionKey() {
+  return crypto.scryptSync(FORGE_WORKER_TOKEN, 'adapter-keys-v1', 32);
+}
+
+function persistAdapterKeys() {
+  try {
+    const keysToSave = {};
+    if (adapters.openai.apiKey) keysToSave.openai = adapters.openai.apiKey;
+    if (Object.keys(keysToSave).length === 0) {
+      // No keys to persist — remove file if exists
+      if (fs.existsSync(ADAPTER_KEYS_FILE)) fs.unlinkSync(ADAPTER_KEYS_FILE);
+      return;
+    }
+    const plaintext = JSON.stringify(keysToSave);
+    const iv = crypto.randomBytes(12);
+    const key = deriveKeyEncryptionKey();
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    const payload = { iv: iv.toString('hex'), authTag: authTag.toString('hex'), data: encrypted.toString('hex'), version: 1 };
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(ADAPTER_KEYS_FILE, JSON.stringify(payload), { mode: 0o600 });
+  } catch (err) {
+    console.error('[AdapterKeys] Error persisting keys:', err.message);
+  }
+}
+
+function loadAdapterKeys() {
+  try {
+    if (!fs.existsSync(ADAPTER_KEYS_FILE)) return;
+    const raw = fs.readFileSync(ADAPTER_KEYS_FILE, 'utf8');
+    const payload = JSON.parse(raw);
+    if (payload.version !== 1) return;
+    const iv = Buffer.from(payload.iv, 'hex');
+    const authTag = Buffer.from(payload.authTag, 'hex');
+    const encrypted = Buffer.from(payload.data, 'hex');
+    const key = deriveKeyEncryptionKey();
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+    const keys = JSON.parse(decrypted);
+    if (keys.openai && typeof keys.openai === 'string') {
+      adapters.openai.apiKey = keys.openai;
+      adapters.openai.status = 'checking';
+    }
+    console.log('[AdapterKeys] Loaded saved keys for:', Object.keys(keys).join(', '));
+  } catch (err) {
+    console.error('[AdapterKeys] Error loading keys:', err.message);
+  }
+}
 const FORGE_PROJECTS_ROOT = path.resolve(process.env.FORGE_PROJECTS_ROOT || ROOT);
 const CSRF_COOKIE = 'forge_csrf';
 const MAX_BODY_BYTES = 1e6;
@@ -58,8 +113,7 @@ function validateWorkspacePath(targetPath) {
 const adapters = {
   openai:     { name: 'OpenAI Responses API', status: process.env.OPENAI_API_KEY ? 'checking' : 'missing_credentials', apiKey: process.env.OPENAI_API_KEY || null, apiKeyEnv: 'OPENAI_API_KEY', baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/', model: process.env.OPENAI_MODEL || 'gpt-5.6-luna', reasoningEffort: process.env.OPENAI_REASONING_EFFORT || 'low', connected: false, lastHealthCheck: null, lastError: null },
   anthropic:  { name: 'Anthropic Claude', status: 'not_configured', apiKeyEnv: 'ANTHROPIC_API_KEY', connected: false },
-  antigravity:{ name: 'Antigravity Engine', status: process.env.ANTIGRAVITY_URL ? 'disconnected' : 'missing_credentials', connected: false, url: process.env.ANTIGRAVITY_URL || null, endpoint: process.env.ANTIGRAVITY_URL || null, lastHealthCheck: null, lastError: null },
-  zai:        { name: 'Z.ai GLM-5.2', status: 'not_configured', apiKey: null, baseUrl: 'https://api.z.ai/api/paas/v4/', connected: false }
+  antigravity:{ name: 'Antigravity Engine', status: process.env.ANTIGRAVITY_URL ? 'disconnected' : 'missing_credentials', connected: false, url: process.env.ANTIGRAVITY_URL || null, endpoint: process.env.ANTIGRAVITY_URL || null, lastHealthCheck: null, lastError: null }
 };
 
 function connectAdapter(adapterKey) {
@@ -73,74 +127,26 @@ function connectAdapter(adapterKey) {
 }
 
 async function initAdapters() {
+  // Restore persisted adapter keys from disk (survives restarts)
+  loadAdapterKeys();
+
   const agHealth = await antigravityAdapter.healthCheck();
   adapters.antigravity.status = agHealth.status;
   adapters.antigravity.connected = agHealth.connected;
   adapters.antigravity.lastHealthCheck = antigravityAdapter.lastHealthCheck;
   adapters.antigravity.lastError = antigravityAdapter.lastError;
-  if (adapters.openai.apiKey) await checkOpenAiConnection();
+
+  // Env vars take priority over persisted keys for OpenAI
+  if (process.env.OPENAI_API_KEY) {
+    adapters.openai.apiKey = process.env.OPENAI_API_KEY;
+    adapters.openai.status = 'checking';
+  }
+  if (adapters.openai.apiKey && adapters.openai.status === 'checking') {
+    await checkOpenAiConnection();
+  }
   if (process.env.ANTHROPIC_API_KEY) connectAdapter('anthropic');
-  if (process.env.ZAI_API_KEY) connectAdapter('zai');
 }
 initAdapters();
-
-// ===== Z.AI GLM-5.2 API CALLER (node:https, zero dependencies) =====
-// Envía mensajes al endpoint OpenAI-compatible de Z.ai y retorna el contenido de la respuesta.
-function callZaiApi(messages) {
-  const a = adapters.zai;
-  if (!a || !a.apiKey || !a.connected) return Promise.resolve(null);
-
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({
-      model: 'glm-5.2',
-      messages,
-      temperature: 0.7,
-      max_tokens: 2048
-    });
-
-    const url = new URL(a.baseUrl + 'chat/completions');
-    const options = {
-      hostname: url.hostname,
-      port: 443,
-      path: url.pathname,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload),
-        'Authorization': `Bearer ${a.apiKey}`,
-        'Accept-Language': 'en-US,en'
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          if (res.statusCode >= 400) {
-            let errMsg;
-            try { errMsg = JSON.parse(data); } catch (_) { errMsg = { error: { message: data.slice(0, 300) } }; }
-            console.error(`[Z.ai] HTTP ${res.statusCode}:`, JSON.stringify(errMsg));
-            reject(new Error(`HTTP ${res.statusCode}: ${errMsg.error?.message || data.slice(0, 300)}`));
-            return;
-          }
-          const json = JSON.parse(data);
-          console.log('[Z.ai] Response OK, model:', json.model || 'unknown');
-          if (json.choices && json.choices[0]) {
-            resolve(json.choices[0].message.content);
-          } else {
-            reject(new Error(json.error?.message || 'Respuesta inesperada de Z.ai'));
-          }
-        } catch (e) { reject(e); }
-      });
-    });
-
-    req.on('error', (e) => { console.error('[Z.ai] Network error:', e.message); reject(e); });
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Timeout: Z.ai no respondió en 30s')); });
-    req.write(payload);
-    req.end();
-  });
-}
 
 // ===== OPENAI RESPONSES API (HTTP directo, sin persistir la API key) =====
 function openAiRequest(method, endpoint, body = null, apiKey = adapters.openai.apiKey, timeout = 30000) {
@@ -253,6 +259,89 @@ async function callOpenAiApi(messages) {
   return text;
 }
 
+const ORCHESTRATION_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    summary: { type: 'string' },
+    objective: { type: 'string' },
+    instructions: { type: 'array', items: { type: 'string' } },
+    files: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          path: { type: 'string' },
+          action: { type: 'string', enum: ['create', 'modify', 'delete', 'inspect'] },
+          reason: { type: 'string' }
+        },
+        required: ['path', 'action', 'reason']
+      }
+    },
+    patch: { type: 'string' },
+    verification: { type: 'array', items: { type: 'string', enum: ['syntax', 'tests'] } },
+    acceptanceCriteria: { type: 'array', items: { type: 'string' } },
+    riskNotes: { type: 'array', items: { type: 'string' } },
+    requiresReview: { type: 'boolean' }
+  },
+  required: ['summary', 'objective', 'instructions', 'files', 'patch', 'verification', 'acceptanceCriteria', 'riskNotes', 'requiresReview']
+};
+
+function parseStructuredJson(text) {
+  const raw = String(text || '').trim();
+  try { return JSON.parse(raw); }
+  catch (error) { throw new Error('OpenAI devolvió un plan no válido: ' + error.message); }
+}
+
+async function callOpenAiOrchestrator(request, project) {
+  const systemPrompt = [
+    'Actúas como el único cerebro de ingeniería del sistema Antigravity.',
+    'Tus responsabilidades son simultáneas: orquestador, ingeniero principal, arquitecto de software y revisor final.',
+    'Debes convertir la solicitud del usuario en instrucciones ejecutables para el worker Antigravity Local Executor.',
+    '',
+    'Proyecto: ' + project.name + '. Rama base: ' + (project.branch || 'main') + '.',
+    'Ruta local permitida: ' + (project.localPath || ROOT) + '.',
+    '',
+    'Reglas obligatorias:',
+    '1. Analiza la solicitud y define una implementación concreta, pequeña y verificable.',
+    '2. Devuelve exclusivamente el JSON del esquema solicitado; no uses markdown fuera del JSON.',
+    '3. El campo patch debe ser un parche unified diff aplicable desde la raíz del proyecto. Si no hay un cambio seguro y concreto, déjalo vacío.',
+    '4. Nunca incluyas secretos, tokens, claves API, rutas fuera del proyecto ni comandos de shell.',
+    '5. verification solo puede contener syntax y/o tests.',
+    '6. Las instrucciones deben ser específicas para Antigravity: archivos, cambios, orden, validaciones y criterios de aceptación.',
+    '7. No declares que algo fue ejecutado: solo describe el plan que el worker debe ejecutar.',
+    '8. requiresReview debe ser true cuando el cambio afecte seguridad, autenticación, datos, dependencias o despliegue.'
+  ].join('\n');
+  const a = adapters.openai;
+  const payload = {
+    model: a.model,
+    input: [
+      { role: 'developer', content: systemPrompt },
+      { role: 'user', content: request }
+    ],
+    max_output_tokens: 6000,
+    store: false,
+    text: {
+      verbosity: 'medium',
+      format: {
+        type: 'json_schema',
+        name: 'antigravity_execution_plan',
+        strict: true,
+        schema: ORCHESTRATION_SCHEMA
+      }
+    }
+  };
+  if (/^gpt-5/i.test(a.model)) payload.reasoning = { effort: a.reasoningEffort };
+  const response = await openAiRequest('POST', 'responses', payload, a.apiKey);
+  if (response.statusCode < 200 || response.statusCode >= 300) throw openAiError(response);
+  const plan = parseStructuredJson(responseText(response.body));
+  if (!plan.summary || !plan.objective || !Array.isArray(plan.instructions) || !Array.isArray(plan.files)) {
+    throw new Error('El plan de OpenAI no contiene los campos obligatorios');
+  }
+  return plan;
+}
+
 const now = () => new Date().toISOString();
 const id = (prefix) => `${prefix}_${crypto.randomBytes(4).toString('hex')}`;
 
@@ -362,6 +451,7 @@ function startWorkerExpirationCheck() {
       } else {
         state.worker.status = 'offline';
         state.worker.name = 'worker-local (desconectado)';
+        state.worker.connected = false;
       }
     }
     if (changed) persist();
@@ -556,15 +646,159 @@ function conversationFor(body = {}) {
   return conversation;
 }
 
-function createRunForMessage(conversationId, messageId, text, result) {
-  const isReview = result.type === 'review';
+function isOrchestrationRequest(text) {
+  return /\b(ejecuta|ejecutar|implementa|implementar|construye|construir|crea|crear|modifica|modificar|corrige|corregir|arregla|arreglar|añade|agrega|actualiza|actualizar|parche|código|codigo|despliega|deploy)\b/i.test(String(text || ''));
+}
+
+function orchestrationText(plan, taskId = null) {
+  const files = (plan.files || []).map(file => '• ' + file.action + ' ' + file.path + ': ' + file.reason).join('\n') || '• Sin archivos determinados; Antigravity debe inspeccionar antes de cambiar.';
+  const instructions = (plan.instructions || []).map((instruction, index) => String(index + 1) + '. ' + instruction).join('\n') || '1. Inspeccionar el workspace y detenerse si falta contexto.';
+  const verification = (plan.verification || []).map(item => item === 'tests' ? 'pruebas automatizadas' : 'sintaxis').join(' y ') || 'validaciones definidas';
+  return [
+    '🧠 **OpenAI — Orquestador / Ingeniero principal / Arquitecto / Revisor**',
+    '**Objetivo:** ' + plan.objective,
+    '**Resumen:** ' + plan.summary,
+    '**Instrucciones específicas para Antigravity:**\n' + instructions,
+    '**Archivos previstos:**\n' + files,
+    '**Verificación obligatoria:** ' + verification + '.',
+    '**Criterios de aceptación:** ' + ((plan.acceptanceCriteria || []).join(' · ') || 'El cambio debe ser reproducible y verificable.'),
+    plan.patch ? '✅ OpenAI generó un parche verificable para ejecutar en un worktree aislado' + (taskId ? ' (' + taskId + ').' : '.') : '⚠️ OpenAI no generó un parche aplicable; Antigravity debe detenerse y solicitar una especificación más concreta.'
+  ].join('\n\n');
+}
+
+function addRunActivity(run, agent, stage, message, meta = {}) {
+  if (!Array.isArray(run.activity)) run.activity = [];
+  run.activity.push({ id: id('activity'), agent, stage, message, createdAt: now(), ...meta });
+  if (run.activity.length > 60) run.activity = run.activity.slice(-60);
+  run.updatedAt = now();
+  event('agent', agent + ': ' + message);
+}
+
+function queueOrchestrationTask(run, conversationId, text, plan) {
+  const conversation = state.conversations.find(item => item.id === conversationId);
+  const project = state.projects.find(item => item.id === conversation?.projectId) || state.projects[0];
+  const task = {
+    id: id('task'),
+    runId: run.id,
+    projectId: project?.id,
+    title: String(plan.objective || text).slice(0, 120),
+    description: text,
+    intent: 'orchestrate',
+    type: 'implementation',
+    status: 'queued',
+    stage: 'queued',
+    priority: 'high',
+    agent: 'OpenAI Orchestrator',
+    instructionPlan: plan,
+    createdAt: now(),
+    updatedAt: now(),
+    progress: 0
+  };
+  state.tasks.unshift(task);
+  run.taskId = task.id;
+  run.worktreeBranch = 'run_' + task.id;
+  addRunActivity(run, 'OpenAI', 'handoff', 'Plan listo; enviando instrucciones específicas a Antigravity Executor.', { taskId: task.id });
+  event('task', 'OpenAI generó instrucciones específicas para Antigravity: ' + task.title);
+  return task;
+}
+
+function createPendingOrchestrationRun(conversationId, messageId, text) {
   const run = {
     id: id('run'),
     conversationId,
     messageId,
-    intent: isReview ? 'review' : 'instruction',
-    status: isReview ? 'completed' : (result.type === 'blocked' ? 'blocked' : 'completed'),
-    progress: 100,
+    intent: 'orchestration',
+    status: 'running',
+    progress: 5,
+    archReasoning: 'OpenAI está analizando la solicitud y preparando el plan de ingeniería.',
+    orchestration: null,
+    activity: [],
+    worktreeBranch: 'main',
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.runs.unshift(run);
+  addRunActivity(run, 'OpenAI', 'analysis', 'Analizando la solicitud, el contexto del proyecto y los límites de ejecución.');
+  return run;
+}
+
+async function processOrchestrationRun(run, assistantMessage, conversation, project, text) {
+  try {
+    if (!adapters.openai.connected || !adapters.openai.apiKey) {
+      run.status = 'blocked';
+      run.progress = 0;
+      assistantMessage.kind = 'blocked';
+      assistantMessage.content = 'OpenAI no está conectado. Configura la API key para iniciar la orquestación.';
+      addRunActivity(run, 'OpenAI', 'blocked', 'No se puede generar el plan hasta configurar la API key.');
+      persist();
+      return;
+    }
+
+    addRunActivity(run, 'OpenAI', 'context', 'Inspeccionando el repositorio y definiendo el alcance seguro del cambio.');
+    run.progress = 15;
+    persist();
+    const plan = await callOpenAiOrchestrator(text, project);
+    run.orchestration = plan;
+    run.archReasoning = orchestrationText(plan);
+    run.progress = 25;
+    assistantMessage.kind = 'orchestration';
+    assistantMessage.content = orchestrationText(plan);
+    assistantMessage.orchestration = plan;
+    addRunActivity(run, 'OpenAI', 'plan', 'Plan estructurado generado: objetivo, archivos, parche y criterios de aceptación definidos.');
+
+    if (!plan.patch) {
+      run.status = 'blocked';
+      assistantMessage.kind = 'blocked';
+      addRunActivity(run, 'OpenAI', 'blocked', 'El plan no contiene un parche verificable; no se enviará una modificación al executor.');
+      persist();
+      return;
+    }
+
+    run.status = 'queued';
+    run.progress = 25;
+    queueOrchestrationTask(run, conversation.id, text, plan);
+    conversation.updatedAt = now();
+    persist();
+  } catch (error) {
+    run.status = 'failed';
+    run.progress = 0;
+    assistantMessage.kind = 'error';
+    assistantMessage.content = 'OpenAI no pudo completar el plan: ' + error.message;
+    addRunActivity(run, 'OpenAI', 'error', error.message);
+    persist();
+  }
+}
+
+function beginOrchestrationMessage(conversation, project, text, selectedModel) {
+  const userMessage = { id: id('msg'), conversationId: conversation.id, role: 'user', content: text, createdAt: now() };
+  const assistantMessage = {
+    id: id('msg'),
+    conversationId: conversation.id,
+    role: 'assistant',
+    content: '🧠 OpenAI está analizando la solicitud y coordinando a los agentes...',
+    kind: 'running',
+    executionStatus: 'running',
+    createdAt: now()
+  };
+  const run = createPendingOrchestrationRun(conversation.id, assistantMessage.id, text);
+  state.messages.push(userMessage, assistantMessage);
+  conversation.updatedAt = now();
+  conversation.title = conversation.title === 'Nueva conversación' ? text.slice(0, 60) : conversation.title;
+  persist();
+  void processOrchestrationRun(run, assistantMessage, conversation, project, text, selectedModel);
+  return { userMessage, assistantMessage, run, conversation };
+}
+
+function createRunForMessage(conversationId, messageId, text, result) {
+  const isReview = result.type === 'review';
+  const isOrchestration = result.type === 'orchestration' && result.orchestration;
+  const run = {
+    id: id('run'),
+    conversationId,
+    messageId,
+    intent: isOrchestration ? 'orchestration' : (isReview ? 'review' : 'instruction'),
+    status: isOrchestration ? 'queued' : (isReview ? 'completed' : (result.type === 'blocked' ? 'blocked' : 'completed')),
+    progress: isOrchestration ? 0 : 100,
     archReasoning: result.text,
     claudeReasoning: isReview && result.review
       ? `Revisión completada: ${result.review.findings?.length || 0} hallazgo(s) detectados. ${(result.review.findings || []).filter(f => f.severity === 'critical' || f.severity === 'high').length} de alta prioridad.`
@@ -578,11 +812,17 @@ function createRunForMessage(conversationId, messageId, text, result) {
       { icon: '📝', label: 'chat', text: `Procesando: "${text.slice(0, 50)}..."` }
     ],
     review: result.review || null,
+    orchestration: result.orchestration || null,
+    activity: [],
     worktreeBranch: 'main',
     createdAt: now(),
     updatedAt: now()
   };
   state.runs.unshift(run);
+  if (isOrchestration) {
+    addRunActivity(run, 'OpenAI', 'plan', 'Plan estructurado generado; preparando el handoff a Antigravity Executor.');
+    queueOrchestrationTask(run, conversationId, text, result.orchestration);
+  }
   return run;
 }
 
@@ -598,7 +838,6 @@ async function chatAnswer(text, project, selectedModel) {
 
   const modelLower = String(selectedModel || '').toLowerCase();
   const useOpenAi = modelLower.includes('gpt-') || modelLower.includes('openai');
-  const useZai = !useOpenAi;
 
   if (useOpenAi && !adapters.openai.connected) {
     return { type: 'blocked', text: `OpenAI no está conectado. Configura OPENAI_API_KEY o usa el panel de configuración. Estado actual: ${adapters.openai.status}.` };
@@ -607,10 +846,14 @@ async function chatAnswer(text, project, selectedModel) {
   // Si OpenAI está seleccionado y conectado, delegar la consulta.
   if (useOpenAi && adapters.openai.connected && adapters.openai.apiKey) {
     try {
-      const systemPrompt = `Eres GPT-5.6 Luna, un arquitecto de software experto que trabaja dentro del ecosistema Antigravity AI.
+      if (isOrchestrationRequest(request)) {
+        const orchestration = await callOpenAiOrchestrator(request, proj);
+        return { type: 'orchestration', text: orchestrationText(orchestration), orchestration };
+      }
+      const systemPrompt = `Eres OpenAI GPT-5.6 Luna, el orquestador central, ingeniero principal, arquitecto de software y revisor final del ecosistema Antigravity.
 Proyecto actual: ${proj.name}. Rama: ${proj.branch || 'main'}.
 Usuario: ${userName} (@${userHandle}).
-Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar o auditar, analiza el contexto del proyecto.`;
+Responde en español, usa markdown, sé técnico pero claro. Para cambios de código, genera instrucciones específicas y criterios verificables para Antigravity Executor. Si te piden revisar o auditar, actúa como revisor final basado en evidencia.`;
       const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: text }
@@ -628,27 +871,9 @@ Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar
     }
   }
 
-  // Si Z.ai está conectado (o es el modelo seleccionado por defecto), delegar al modelo GLM-5.2
-  if (useZai && adapters.zai.connected && adapters.zai.apiKey) {
-    try {
-      const systemPrompt = `Eres Antigravity AI, un orquestador de agentes de ingeniería de software.
-Proyecto actual: ${proj.name}. Rama: ${proj.branch || 'main'}.
-Usuario: ${userName} (@${userHandle}).
-Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar o auditar, analiza el contexto del proyecto.`;
-      const messages = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: text }
-      ];
-      const aiResponse = await callZaiApi(messages);
-      if (aiResponse) return { type: 'answer', text: aiResponse };
-    } catch (err) {
-      event('error', `Z.ai error: ${err.message}`);
-    }
-  }
-
   // 1. GREETINGS
   if (/\b(hola|buen[ao]s|saludos|hey|hi|hello)\b/i.test(normalized)) {
-    const answer = `👋 **¡Hola, ${userName}!** Soy **✨ Antigravity AI (Líder Orquestador)**.\n\nEstoy conectado a tu proyecto **${proj.name}** en GitHub ([@${userHandle}](${githubUrl})).\n\n**¿En qué trabajamos hoy?** Puedo:\n• 🔍 **Revisar y auditar tu repositorio** en busca de fallos o mejoras de seguridad.\n• 🧠 **Diseñar la arquitectura** para una nueva funcionalidad con **GPT-5.6 Luna**.\n• 🛡️ **Evaluar riesgos OWASP** con **Claude 3.5**.\n• ⚡ **Ejecutar código y pruebas** en tu Worker Local aislado.`;
+    const answer = `👋 **¡Hola, ${userName}!** Soy **🧠 OpenAI Orquestador**.\n\nEstoy conectado a tu proyecto **${proj.name}** en GitHub ([@${userHandle}](${githubUrl})).\n\n**¿En qué trabajamos hoy?** Puedo:\n• 🧭 **Orquestar** el ciclo completo de ingeniería.\n• 🏗️ **Diseñar arquitectura** e instrucciones específicas.\n• 🔍 **Revisar** seguridad, calidad y criterios de aceptación.\n• ⚡ **Enviar un parche verificable a Antigravity Executor** en un worktree aislado.`;
     return { type: 'answer', text: answer };
   }
 
@@ -671,11 +896,11 @@ Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar
     const high = review.findings.filter(item => ['critical', 'high'].includes(item.severity));
     const testText = review.tests.status === 'passed' ? 'Las pruebas unitarias del proyecto pasaron exitosamente.' : review.tests.status === 'failed' ? 'Las pruebas unitarias fallaron.' : 'Sin script de pruebas configurado.';
     const answer = [
-      `✨ **Antigravity AI Engine (Líder Orquestador)**: He procesado tu solicitud de revisión para **${review.project}**.`,
+      `🧠 **OpenAI Orquestador / Principal Engineer / Arquitecto / Revisor**: He procesado tu solicitud para **${review.project}**.`,
       `Coordiné al equipo de agentes:`,
-      `• 🧠 **GPT-5.6 Luna Architect**: Inspeccionó ${review.inspectedFiles.length} archivos en la rama \`${review.git.branch}\`.`,
-      `• 🛡️ **Claude 3.5 Reviewer**: Evaluó permisos y seguridad. Encontró ${review.findings.length} hallazgo(s) (${high.length} prioritarios).`,
-      `• ⚡ **Worker Local / Antigravity Executor**: Ejecutó la inspección directa y pruebas (${testText}).`,
+      `• 🧠 **OpenAI Principal Engineer**: Inspeccionó ${review.inspectedFiles.length} archivos en la rama \`${review.git.branch}\`.`,
+      `• 🔍 **OpenAI Final Reviewer**: Evaluó permisos y seguridad. Encontró ${review.findings.length} hallazgo(s) (${high.length} prioritarios).`,
+      `• ⚡ **Antigravity Executor**: Ejecutó la inspección directa y pruebas (${testText}).`,
       `Árbol principal intacto y listo para operar.`
     ].join('\n\n');
     return { type: 'review', text: answer, review };
@@ -683,7 +908,7 @@ Responde en español, usa markdown, sé técnico pero claro. Si te piden revisar
 
   // 4. HELP & CAPABILITIES
   if (/\b(qué puedes|que puedes|ayuda|help|cómo funciona|como funciona)\b/i.test(normalized)) {
-    return { type: 'answer', text: `✨ **Antigravity AI (Líder Orquestador)**: Recibo tus instrucciones en el chat, diseño el plan de ingeniería y delego tareas a **GPT-5.6 Luna** (Arquitectura) y **Claude 3.5** (Seguridad), mientras ejecuto los cambios y pruebas de forma aislada en el Worker Local de tu Mac.` };
+    return { type: 'answer', text: `🧠 **OpenAI Orquestador**: recibo tu instrucción, diseño la arquitectura, reviso riesgos y genero un parche verificable para que **Antigravity Executor** lo aplique en un worktree aislado.` };
   }
 
   // 5. BUILD & IMPLEMENTATION
@@ -783,6 +1008,9 @@ async function api(req, res, url) {
       state.worker.name = workerObj.name;
       state.worker.antigravityId = workerId;
       state.worker.lastHeartbeat = workerObj.lastHeartbeat;
+      state.worker.pid = workerObj.pid;
+      state.worker.activePort = PORT;
+      state.worker.connected = true;
     }
     event('success', `Worker local registrado: ${workerObj.name} (${workerId})`);
     persist();
@@ -815,6 +1043,9 @@ async function api(req, res, url) {
     if (state.worker) {
       state.worker.status = 'online';
       state.worker.lastHeartbeat = workerObj.lastHeartbeat;
+      state.worker.pid = workerObj.pid;
+      state.worker.activePort = PORT;
+      state.worker.connected = true;
     }
 
     return json(res, 200, { ok: true, status: 'connected', lastHeartbeat: workerObj.lastHeartbeat });
@@ -859,6 +1090,28 @@ async function api(req, res, url) {
       task.progress = body.progress !== undefined ? body.progress : task.progress;
       task.result = body.result || task.result;
       task.updatedAt = new Date().toISOString();
+      if (task.runId) {
+        const run = state.runs.find(item => item.id === task.runId);
+        if (run) {
+          run.status = task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'failed' : task.status === 'blocked' ? 'blocked' : 'running';
+          run.progress = task.progress;
+          run.executorResult = task.result;
+          run.changedFiles = body.changedFiles || [];
+          run.verification = body.verification || [];
+          run.updatedAt = task.updatedAt;
+          addRunActivity(run, 'Antigravity Executor', task.stage || 'execute', task.result, { status: task.status, progress: task.progress, changedFiles: body.changedFiles || [] });
+          if (Array.isArray(body.verification) && body.verification.length > 0) {
+            addRunActivity(run, 'OpenAI Final Reviewer', 'review', 'Validaciones recibidas: ' + body.verification.map(item => item.check || item).join(', ') + '.');
+          }
+          const assistantMessage = state.messages.find(message => message.id === run.messageId);
+          if (assistantMessage) {
+            assistantMessage.executionStatus = task.status;
+            assistantMessage.executionResult = task.result;
+            assistantMessage.changedFiles = body.changedFiles || [];
+            assistantMessage.verification = body.verification || [];
+          }
+        }
+      }
       event(task.status === 'completed' ? 'success' : task.status === 'failed' ? 'error' : 'agent', `Tarea ${taskId}: ${task.status}`);
       persist();
     }
@@ -889,7 +1142,7 @@ async function api(req, res, url) {
 
     const agents = [
       {
-        id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', role: 'Architect',
+        id: 'gpt-5.6-luna', name: 'OpenAI GPT-5.6 Luna', role: 'Orchestrator / Principal Engineer / Architect / Reviewer',
         status: adapters.openai.connected ? 'connected' : adapters.openai.status,
         adapter: adapters.openai.connected ? 'openai' : null,
         model: adapters.openai.model,
@@ -905,24 +1158,18 @@ async function api(req, res, url) {
         lastHeartbeat: now()
       },
       {
-        id: 'antigravity-engine', name: 'Antigravity Remote Engine', role: 'Orchestrator Protocol',
+        id: 'antigravity-engine', name: 'Antigravity Remote Executor', role: 'Execution Gateway',
         status: adapters.antigravity.connected ? 'connected' : (adapters.antigravity.url ? 'disconnected' : 'missing_credentials'),
         adapter: 'antigravity-adapter',
         endpoint: adapters.antigravity.endpoint || process.env.ANTIGRAVITY_URL || null,
         lastHeartbeat: adapters.antigravity.lastHealthCheck
       },
       {
-        id: 'worker-local', name: 'Worker Local Process', role: 'Executor & Test Runner',
+        id: 'worker-local', name: 'Antigravity Local Executor', role: 'Patch Executor & Test Runner',
         status: activeWorkerObj ? 'connected' : 'disconnected',
         adapter: 'worker-local',
         workerName: activeWorkerObj ? activeWorkerObj.name : 'worker-local',
         lastHeartbeat: activeWorkerObj ? activeWorkerObj.lastHeartbeat : null
-      },
-      {
-        id: 'zai-glm', name: 'Z.ai GLM-5.2', role: 'AI Engine',
-        status: adapters.zai.connected ? 'connected' : 'disconnected',
-        adapter: adapters.zai.connected ? 'zai' : null,
-        lastHeartbeat: now()
       }
     ];
     return json(res, 200, { ok: true, agents });
@@ -992,9 +1239,13 @@ async function api(req, res, url) {
     if (!text) return json(res, 400, { ok: false, error: 'El mensaje no puede estar vacío' });
     const project = state.projects.find(p => p.id === conversation.projectId) || state.projects[0];
     const selectedModel = String(body.architectModel || '');
+    if (isOrchestrationRequest(text) && (!selectedModel || /gpt-|openai/i.test(selectedModel))) {
+      const started = beginOrchestrationMessage(conversation, project, text, selectedModel);
+      return json(res, 201, { ok: true, ...started });
+    }
     const userMessage = { id: id('msg'), conversationId: conversation.id, role: 'user', content: text, createdAt: now() };
     const result = await chatAnswer(text, project, selectedModel);
-    const assistantMessage = { id: id('msg'), conversationId: conversation.id, role: 'assistant', content: result.text, kind: result.type, review: result.review || null, createdAt: now() };
+    const assistantMessage = { id: id('msg'), conversationId: conversation.id, role: 'assistant', content: result.text, kind: result.type, review: result.review || null, orchestration: result.orchestration || null, createdAt: now() };
     state.messages.push(userMessage, assistantMessage);
     const run = createRunForMessage(conversation.id, assistantMessage.id, text, result);
     conversation.updatedAt = now();
@@ -1032,8 +1283,12 @@ async function api(req, res, url) {
     const project = state.projects.find(item => item.id === conversation.projectId) || state.projects[0];
     const userMessage = { id: id('msg'), conversationId: conversation.id, role: 'user', content: text, createdAt: now() };
     const selectedModel = String(body.model || body.architectModel || '');
+    if (isOrchestrationRequest(text) && (!selectedModel || /gpt-|openai/i.test(selectedModel))) {
+      const started = beginOrchestrationMessage(conversation, project, text, selectedModel);
+      return json(res, 201, started);
+    }
     const result = await chatAnswer(text, project, selectedModel);
-    const assistantMessage = { id: id('msg'), conversationId: conversation.id, role: 'assistant', content: result.text, kind: result.type, review: result.review || null, createdAt: now() };
+    const assistantMessage = { id: id('msg'), conversationId: conversation.id, role: 'assistant', content: result.text, kind: result.type, review: result.review || null, orchestration: result.orchestration || null, createdAt: now() };
     state.messages.push(userMessage, assistantMessage);
     const run = createRunForMessage(conversation.id, assistantMessage.id, text, result);
     conversation.updatedAt = now();
@@ -1076,12 +1331,25 @@ async function api(req, res, url) {
       'Connection': 'keep-alive'
     });
 
-    // Send current state immediately
-    res.write(`data: ${JSON.stringify({ type: 'state', run })}\n\n`);
-    res.write(`data: ${JSON.stringify({ type: 'done', runId })}\n\n`);
-    res.end();
+    const terminalStatuses = new Set(['completed', 'blocked', 'failed', 'cancelled', 'rejected', 'approved']);
+    let lastUpdatedAt = null;
+    let pollTimer = null;
+    const pushRunState = () => {
+      const currentRun = state.runs.find(item => item.id === runId);
+      if (!currentRun || currentRun.updatedAt === lastUpdatedAt) return;
+      lastUpdatedAt = currentRun.updatedAt;
+      res.write('data: ' + JSON.stringify({ type: 'state', run: currentRun }) + '\n\n');
+      if (terminalStatuses.has(currentRun.status)) {
+        res.write('data: ' + JSON.stringify({ type: 'done', runId }) + '\n\n');
+        if (pollTimer) clearInterval(pollTimer);
+        res.end();
+      }
+    };
+    pushRunState();
+    if (!terminalStatuses.has(run.status)) pollTimer = setInterval(pushRunState, 250);
+    req.on('close', () => { if (pollTimer) clearInterval(pollTimer); });
     return;
-  }
+ }
 
   // POST /api/runs/:id/approve
   const runActionMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/(approve|reject|cancel|retry)$/);
@@ -1136,6 +1404,7 @@ async function api(req, res, url) {
     const result = await checkOpenAiConnection();
     if (result.ok) {
       event('success', `OpenAI conectado: ${adapters.openai.model}`);
+      persistAdapterKeys();
       return json(res, 200, { ok: true, adapter: publicOpenAiAdapter() });
     }
     adapters.openai.apiKey = null;
@@ -1150,47 +1419,13 @@ async function api(req, res, url) {
     adapters.openai.connected = false;
     adapters.openai.lastError = null;
     event('agent', 'OpenAI GPT-5.6 Luna desconectado');
+    persistAdapterKeys();
     return json(res, 200, { ok: true, adapter: publicOpenAiAdapter() });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/adapters/openai/health') {
     const result = await checkOpenAiConnection();
     return json(res, result.ok ? 200 : 503, { ok: result.ok, adapter: publicOpenAiAdapter(), error: result.error || null });
-  }
-
-  // POST /api/adapters/zai/configure — connect Z.ai with API key
-  if (req.method === 'POST' && url.pathname === '/api/adapters/zai/configure') {
-    const body = await parseBody(req);
-    const apiKey = String(body.apiKey || '').trim();
-    if (!apiKey) return json(res, 400, { ok: false, error: 'API Key requerida' });
-
-    adapters.zai.apiKey = apiKey;
-    adapters.zai.status = 'connected';
-    adapters.zai.connected = true;
-
-    try {
-      await callZaiApi([{ role: 'user', content: 'ping' }]);
-      event('success', 'Z.ai GLM-5.2 conectado exitosamente');
-      persist();
-      return json(res, 200, { ok: true, adapter: { name: adapters.zai.name, status: 'connected', connected: true } });
-    } catch (err) {
-      adapters.zai.status = 'auth_error';
-      adapters.zai.connected = false;
-      adapters.zai.apiKey = null;
-      event('error', `Z.ai auth falló: ${err.message}`);
-      persist();
-      return json(res, 200, { ok: false, error: err.message, adapter: { name: adapters.zai.name, status: 'auth_error', connected: false } });
-    }
-  }
-
-  // DELETE /api/adapters/zai/configure — disconnect Z.ai
-  if (req.method === 'DELETE' && url.pathname === '/api/adapters/zai/configure') {
-    adapters.zai.apiKey = null;
-    adapters.zai.status = 'not_configured';
-    adapters.zai.connected = false;
-    event('agent', 'Z.ai GLM-5.2 desconectado');
-    persist();
-    return json(res, 200, { ok: true, adapter: { name: adapters.zai.name, status: 'not_configured', connected: false } });
   }
 
   return json(res, 404, { error: 'Ruta no encontrada' });
